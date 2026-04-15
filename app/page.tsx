@@ -33,6 +33,9 @@ export default function Home() {
   const [newUserPassword, setNewUserPassword] = useState('');
   const [userManagementLoading, setUserManagementLoading] = useState(false);
   const [userMessage, setUserMessage] = useState('');
+  const [bulkInput, setBulkInput] = useState('');
+  const [isBulkMode, setIsBulkMode] = useState(false);
+  const [bulkResults, setBulkResults] = useState<any[] | null>(null);
   // 🌟 ここから追加：編集機能用のステートと関数
   const [isEditing, setIsEditing] = useState(false);
   const [editData, setEditData] = useState<any>(null);
@@ -99,6 +102,35 @@ export default function Home() {
         setUserMessage('アカウントを作成しました');
         setNewUserEmail('');
         setNewUserPassword('');
+        fetchUsers();
+      } else {
+        setUserMessage('エラー: ' + result.error);
+      }
+    } catch (err) {
+      setUserMessage('通信エラーが発生しました');
+    }
+  };
+
+  const handleBulkCreate = async () => {
+    if (!bulkInput.trim()) return;
+    const lines = bulkInput.trim().split('\n').filter(l => l.trim());
+    const users = lines.map(line => {
+      const [email, password] = line.split(',').map(s => s.trim());
+      return { email, password };
+    });
+    setUserMessage('一括登録中...');
+    setBulkResults(null);
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bulk: true, users })
+      });
+      const result = await res.json();
+      if (result.success) {
+        setUserMessage(`${result.successCount}/${result.totalCount}件 登録完了`);
+        setBulkResults(result.results);
+        setBulkInput('');
         fetchUsers();
       } else {
         setUserMessage('エラー: ' + result.error);
@@ -487,32 +519,78 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
             <div className="w-12"></div>
           </div>
 
-          {/* 新規アカウント作成 */}
+          {/* 登録モード切り替え */}
+          <div className="p-4 border-b border-slate-100 flex gap-2">
+            <button
+              onClick={() => { setIsBulkMode(false); setBulkResults(null); setUserMessage(''); }}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors ${!isBulkMode ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}
+            >
+              1件ずつ登録
+            </button>
+            <button
+              onClick={() => { setIsBulkMode(true); setBulkResults(null); setUserMessage(''); }}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors ${isBulkMode ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}
+            >
+              一括インポート
+            </button>
+          </div>
+
           <div className="p-6 border-b border-slate-100">
-            <h3 className="text-sm font-bold text-blue-600 mb-4">新規アカウント作成</h3>
-            <div className="space-y-3">
-              <input
-                type="email"
-                placeholder="メールアドレス"
-                value={newUserEmail}
-                onChange={(e) => setNewUserEmail(e.target.value)}
-                className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-              />
-              <input
-                type="text"
-                placeholder="パスワード（6文字以上）"
-                value={newUserPassword}
-                onChange={(e) => setNewUserPassword(e.target.value)}
-                className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-              />
-              <button
-                onClick={handleCreateUser}
-                disabled={!newUserEmail || !newUserPassword || newUserPassword.length < 6}
-                className="w-full py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 transition-colors"
-              >
-                アカウントを作成
-              </button>
-            </div>
+            {!isBulkMode ? (
+              <>
+                <h3 className="text-sm font-bold text-blue-600 mb-4">新規アカウント作成</h3>
+                <div className="space-y-3">
+                  <input
+                    type="email"
+                    placeholder="メールアドレス"
+                    value={newUserEmail}
+                    onChange={(e) => setNewUserEmail(e.target.value)}
+                    className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  />
+                  <input
+                    type="text"
+                    placeholder="パスワード（6文字以上）"
+                    value={newUserPassword}
+                    onChange={(e) => setNewUserPassword(e.target.value)}
+                    className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  />
+                  <button
+                    onClick={handleCreateUser}
+                    disabled={!newUserEmail || !newUserPassword || newUserPassword.length < 6}
+                    className="w-full py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 transition-colors"
+                  >
+                    アカウントを作成
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 className="text-sm font-bold text-blue-600 mb-2">一括インポート</h3>
+                <p className="text-[11px] text-slate-400 mb-3">1行につき「メールアドレス,パスワード」の形式で入力してください</p>
+                <textarea
+                  placeholder={"user1@example.com,password123\nuser2@example.com,password456\nuser3@example.com,password789"}
+                  value={bulkInput}
+                  onChange={(e) => setBulkInput(e.target.value)}
+                  className="w-full p-4 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm font-mono h-40 resize-y"
+                />
+                <button
+                  onClick={handleBulkCreate}
+                  disabled={!bulkInput.trim()}
+                  className="w-full mt-3 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 transition-colors"
+                >
+                  一括登録する
+                </button>
+                {bulkResults && (
+                  <div className="mt-4 space-y-1">
+                    {bulkResults.map((r: any, i: number) => (
+                      <div key={i} className={`text-[11px] p-2 rounded-lg ${r.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                        {r.email}: {r.success ? '登録成功' : `失敗 - ${r.error}`}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
             {userMessage && <p className="mt-3 text-sm font-bold text-center text-blue-600">{userMessage}</p>}
           </div>
 
