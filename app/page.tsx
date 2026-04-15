@@ -289,7 +289,7 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
               )}
               
               <span className="text-[11px] font-bold text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full">{selectedItem.time_status}</span>
-              <span className="text-[11px] text-slate-400 ml-auto">{new Date(selectedItem.created_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+              <span className="text-[11px] ml-auto" style={{color: '#000000'}}>{new Date(selectedItem.created_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
             </div>
 
             {/* 3. タイトルの編集 */}
@@ -497,7 +497,7 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
                   </div>
                   <h3 className="text-[15px] font-bold text-slate-800 leading-snug mb-3">{item.title}</h3>
                   <div className="flex justify-between items-center">
-                    <span className="text-[10px] text-slate-400">{new Date(item.created_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                    <span className="text-[10px]" style={{color: '#000000'}}>{new Date(item.created_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                     <span className="text-xs font-bold text-blue-600 hover:underline">詳細を見る →</span>
                   </div>
                 </div>
