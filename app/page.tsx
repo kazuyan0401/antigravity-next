@@ -27,6 +27,12 @@ export default function Home() {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   
   const [isAdminUser, setIsAdminUser] = useState(false);
+  const [isUserManagement, setIsUserManagement] = useState(false);
+  const [users, setUsers] = useState<any[]>([]);
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [userManagementLoading, setUserManagementLoading] = useState(false);
+  const [userMessage, setUserMessage] = useState('');
   // 🌟 ここから追加：編集機能用のステートと関数
   const [isEditing, setIsEditing] = useState(false);
   const [editData, setEditData] = useState<any>(null);
@@ -64,7 +70,64 @@ export default function Home() {
     }
   };
   // 🌟 ここまで追加
-  
+
+  // ユーザー管理機能
+  const fetchUsers = async () => {
+    setUserManagementLoading(true);
+    try {
+      const res = await fetch('/api/admin/users');
+      const result = await res.json();
+      if (result.success) setUsers(result.users);
+    } catch (err) {
+      setUserMessage('ユーザー一覧の取得に失敗しました');
+    } finally {
+      setUserManagementLoading(false);
+    }
+  };
+
+  const handleCreateUser = async () => {
+    if (!newUserEmail || !newUserPassword) return;
+    setUserMessage('作成中...');
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: newUserEmail, password: newUserPassword })
+      });
+      const result = await res.json();
+      if (result.success) {
+        setUserMessage('アカウントを作成しました');
+        setNewUserEmail('');
+        setNewUserPassword('');
+        fetchUsers();
+      } else {
+        setUserMessage('エラー: ' + result.error);
+      }
+    } catch (err) {
+      setUserMessage('通信エラーが発生しました');
+    }
+  };
+
+  const handleDeleteUser = async (userId: string, email: string) => {
+    if (!confirm(`${email} のアカウントを削除しますか？\nこの操作は元に戻せません。`)) return;
+    try {
+      const res = await fetch('/api/admin/delete-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId })
+      });
+      const result = await res.json();
+      if (result.success) {
+        setUserMessage(`${email} を削除しました`);
+        fetchUsers();
+      } else {
+        setUserMessage('エラー: ' + result.error);
+      }
+    } catch (err) {
+      setUserMessage('通信エラーが発生しました');
+    }
+  };
+
   // 🌟 管理者のメールアドレスをリストで指定します（カンマ区切りで追加可能）
   const ADMIN_EMAILS = [
     'prostzaitaku@gmail.com',
@@ -411,6 +474,80 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
     );
   }
 
+  // 🌟 ユーザー管理画面の表示
+  if (isUserManagement) {
+    return (
+      <div className="min-h-screen bg-slate-50 p-4 font-sans text-slate-800">
+        <div className="max-w-xl mx-auto bg-white rounded-2xl shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+            <button onClick={() => { setIsUserManagement(false); setUserMessage(''); }} className="text-slate-400 hover:text-slate-600 font-bold flex items-center gap-1">
+              <span>←</span> 戻る
+            </button>
+            <h2 className="text-lg font-bold">ユーザー管理</h2>
+            <div className="w-12"></div>
+          </div>
+
+          {/* 新規アカウント作成 */}
+          <div className="p-6 border-b border-slate-100">
+            <h3 className="text-sm font-bold text-blue-600 mb-4">新規アカウント作成</h3>
+            <div className="space-y-3">
+              <input
+                type="email"
+                placeholder="メールアドレス"
+                value={newUserEmail}
+                onChange={(e) => setNewUserEmail(e.target.value)}
+                className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              />
+              <input
+                type="text"
+                placeholder="パスワード（6文字以上）"
+                value={newUserPassword}
+                onChange={(e) => setNewUserPassword(e.target.value)}
+                className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              />
+              <button
+                onClick={handleCreateUser}
+                disabled={!newUserEmail || !newUserPassword || newUserPassword.length < 6}
+                className="w-full py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 transition-colors"
+              >
+                アカウントを作成
+              </button>
+            </div>
+            {userMessage && <p className="mt-3 text-sm font-bold text-center text-blue-600">{userMessage}</p>}
+          </div>
+
+          {/* ユーザー一覧 */}
+          <div className="p-6">
+            <h3 className="text-sm font-bold text-slate-600 mb-4">登録ユーザー一覧（{users.length}名）</h3>
+            {userManagementLoading ? (
+              <div className="text-center py-8 text-slate-400 animate-pulse">読み込み中...</div>
+            ) : (
+              <div className="space-y-3">
+                {users.map((user) => (
+                  <div key={user.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">{user.email}</p>
+                      <p className="text-[10px] text-slate-400">{new Date(user.created_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: 'numeric', day: 'numeric' })} 登録</p>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteUser(user.id, user.email)}
+                      className="text-[11px] font-bold bg-red-50 text-red-500 px-3 py-2 rounded-lg hover:bg-red-100"
+                    >
+                      削除
+                    </button>
+                  </div>
+                ))}
+                {users.length === 0 && (
+                  <div className="text-center py-8 text-slate-400 text-sm">登録ユーザーがいません</div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // 🌟 新ネタ手動追加画面の表示
   if (isAdmin) {
     return (
@@ -455,9 +592,12 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
       <div className="max-w-xl mx-auto min-h-screen bg-white shadow-sm border-x border-slate-100">
         <header className="p-6 flex justify-between items-center border-b border-slate-100">
           <h1 className="text-xl font-black text-slate-800">X-Affiliate<span className="text-blue-600">.next</span></h1>
-          {/* 🌟 管理者だけに⊕ボタンを表示 */}
+          {/* 🌟 管理者だけにボタンを表示 */}
           {isAdminUser && (
-            <button onClick={handleOpenAdmin} className="bg-white p-2 text-xl text-blue-600 hover:bg-blue-50 rounded-full transition-colors">⊕</button>
+            <div className="flex gap-2 items-center">
+              <button onClick={() => { setIsUserManagement(true); fetchUsers(); }} className="text-[11px] font-bold bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200">ユーザー管理</button>
+              <button onClick={handleOpenAdmin} className="bg-white p-2 text-xl text-blue-600 hover:bg-blue-50 rounded-full transition-colors">⊕</button>
+            </div>
           )}
         </header>
 
