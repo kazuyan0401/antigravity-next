@@ -36,6 +36,14 @@ export default function Home() {
   const [bulkInput, setBulkInput] = useState('');
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [bulkResults, setBulkResults] = useState<any[] | null>(null);
+  // 🌟 ドラマ管理機能用のステート
+  const [isDramaManagement, setIsDramaManagement] = useState(false);
+  const [dramas, setDramas] = useState<any[]>([]);
+  const [dramaLoading, setDramaLoading] = useState(false);
+  const [dramaSeason, setDramaSeason] = useState('spring2026');
+  const [dramaMessage, setDramaMessage] = useState('');
+  const [queueStatus, setQueueStatus] = useState<any>(null);
+  const [seasonBatchLoading, setSeasonBatchLoading] = useState(false);
   // 🌟 ここから追加：編集機能用のステートと関数
   const [isEditing, setIsEditing] = useState(false);
   const [editData, setEditData] = useState<any>(null);
@@ -157,6 +165,79 @@ export default function Home() {
       }
     } catch (err) {
       setUserMessage('通信エラーが発生しました');
+    }
+  };
+
+  // 🌟 ドラマ管理機能
+  const fetchDramas = async (season?: string) => {
+    setDramaLoading(true);
+    try {
+      const url = season ? `/api/admin/drama/list?season=${season}` : '/api/admin/drama/list';
+      const res = await fetch(url);
+      const result = await res.json();
+      if (result.success) {
+        setDramas(result.dramas);
+        setQueueStatus(result.queueToday);
+      } else {
+        setDramaMessage('エラー: ' + result.error);
+      }
+    } catch (err) {
+      setDramaMessage('一覧取得に失敗しました');
+    } finally {
+      setDramaLoading(false);
+    }
+  };
+
+  const handleSeasonBatch = async () => {
+    if (!confirm(`${dramaSeason} のドラマをcrank-in.netから一括登録します。よろしいですか？`)) return;
+    setSeasonBatchLoading(true);
+    setDramaMessage('crank-in.netから取得中...しばらくお待ちください');
+    try {
+      const res = await fetch('/api/admin/drama/season-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ season: dramaSeason }),
+      });
+      const result = await res.json();
+      if (result.success) {
+        setDramaMessage(`登録完了: 新規${result.inserted}件 / 既存スキップ${result.skipped}件 / 合計${result.total}件`);
+        fetchDramas(dramaSeason);
+      } else {
+        setDramaMessage(`エラー: ${result.error}`);
+      }
+    } catch (err) {
+      setDramaMessage('通信エラーが発生しました');
+    } finally {
+      setSeasonBatchLoading(false);
+    }
+  };
+
+  const handleToggleDrama = async (id: string, enabled: boolean) => {
+    try {
+      const res = await fetch('/api/admin/drama/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, enabled: !enabled }),
+      });
+      const result = await res.json();
+      if (result.success) fetchDramas(dramaSeason);
+    } catch (err) {
+      setDramaMessage('切替に失敗しました');
+    }
+  };
+
+  const handleDeleteDrama = async (id: string, title: string) => {
+    if (!confirm(`「${title}」を監視対象から削除しますか？\n紐づくキューも削除されます。`)) return;
+    try {
+      const res = await fetch('/api/admin/drama/toggle', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      const result = await res.json();
+      if (result.success) fetchDramas(dramaSeason);
+    } catch (err) {
+      setDramaMessage('削除に失敗しました');
     }
   };
 
@@ -506,6 +587,118 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
     );
   }
 
+  // 🌟 ドラマ管理画面の表示
+  if (isDramaManagement) {
+    const DOW_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
+    return (
+      <div className="min-h-screen bg-slate-50 p-4 font-sans text-slate-800">
+        <div className="max-w-xl mx-auto bg-white rounded-2xl shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+            <button onClick={() => { setIsDramaManagement(false); setDramaMessage(''); }} className="text-slate-400 hover:text-slate-600 font-bold flex items-center gap-1">
+              <span>←</span> 戻る
+            </button>
+            <h2 className="text-lg font-bold">ドラマ管理</h2>
+            <div className="w-12"></div>
+          </div>
+
+          {/* シーズン選択 + 一括登録 */}
+          <div className="p-6 border-b border-slate-100">
+            <h3 className="text-sm font-bold text-blue-600 mb-3">シーズン一括登録</h3>
+            <p className="text-[11px] text-slate-400 mb-3">crank-in.net から指定シーズンのドラマ一覧を取得し監視対象として登録します。AI処理は翌朝の自動cronから順次開始されます。</p>
+            <div className="flex gap-2 mb-3">
+              <select
+                value={dramaSeason}
+                onChange={(e) => { setDramaSeason(e.target.value); fetchDramas(e.target.value); }}
+                className="flex-1 p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              >
+                <option value="winter2026">冬2026</option>
+                <option value="spring2026">春2026</option>
+                <option value="summer2026">夏2026</option>
+                <option value="autumn2026">秋2026</option>
+                <option value="winter2027">冬2027</option>
+              </select>
+              <button
+                onClick={handleSeasonBatch}
+                disabled={seasonBatchLoading}
+                className="px-5 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 transition-colors text-sm whitespace-nowrap"
+              >
+                {seasonBatchLoading ? '取得中...' : '一括登録'}
+              </button>
+            </div>
+            {dramaMessage && <p className="mt-2 text-xs font-bold text-blue-600 whitespace-pre-wrap">{dramaMessage}</p>}
+          </div>
+
+          {/* 本日のキュー状況 */}
+          {queueStatus && (
+            <div className="p-4 border-b border-slate-100 bg-slate-50/50">
+              <h3 className="text-xs font-bold text-slate-500 mb-2">本日（{queueStatus.todayStr}）のキュー状況</h3>
+              <div className="flex gap-2 text-[11px] font-bold">
+                <span className="px-3 py-1 rounded-full bg-amber-50 text-amber-600">未処理 {queueStatus.pending}</span>
+                <span className="px-3 py-1 rounded-full bg-blue-50 text-blue-600">処理中 {queueStatus.processing}</span>
+                <span className="px-3 py-1 rounded-full bg-green-50 text-green-700">完了 {queueStatus.done}</span>
+                <span className="px-3 py-1 rounded-full bg-red-50 text-red-600">失敗 {queueStatus.failed}</span>
+              </div>
+            </div>
+          )}
+
+          {/* 登録ドラマ一覧 */}
+          <div className="p-6">
+            <h3 className="text-sm font-bold text-slate-600 mb-4">監視対象ドラマ（{dramas.length}本）</h3>
+            {dramaLoading ? (
+              <div className="text-center py-8 text-slate-400 animate-pulse">読み込み中...</div>
+            ) : (
+              <div className="space-y-3">
+                {dramas.map((d) => (
+                  <div key={d.id} className={`p-4 rounded-xl border ${d.enabled ? 'bg-white border-slate-200' : 'bg-slate-50 border-slate-100 opacity-60'}`}>
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-slate-800 truncate">{d.title}</p>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded">{d.network || '局不明'}</span>
+                          {d.is_daily ? (
+                            <span className="text-[10px] font-bold text-orange-600 bg-orange-50 px-2 py-0.5 rounded">帯ドラマ</span>
+                          ) : d.air_day_of_week !== null && d.air_day_of_week !== undefined ? (
+                            <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded">{DOW_LABEL[d.air_day_of_week]}曜 {d.air_time || ''}</span>
+                          ) : (
+                            <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-0.5 rounded">時間未定</span>
+                          )}
+                          {d.season && <span className="text-[10px] font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded">{d.season}</span>}
+                        </div>
+                        {d.official_url && (
+                          <a href={d.official_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-500 hover:underline truncate block mt-1">{d.official_url}</a>
+                        )}
+                        {d.last_processed_at && (
+                          <p className="text-[10px] text-slate-400 mt-1">最終処理: {new Date(d.last_processed_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                        )}
+                      </div>
+                      <div className="flex flex-col gap-1 items-end">
+                        <button
+                          onClick={() => handleToggleDrama(d.id, d.enabled)}
+                          className={`text-[10px] font-bold px-3 py-1.5 rounded-lg whitespace-nowrap ${d.enabled ? 'bg-green-50 text-green-700 hover:bg-green-100' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                        >
+                          {d.enabled ? '監視中' : '停止中'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteDrama(d.id, d.title)}
+                          className="text-[10px] font-bold bg-red-50 text-red-500 px-3 py-1.5 rounded-lg hover:bg-red-100 whitespace-nowrap"
+                        >
+                          削除
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {dramas.length === 0 && (
+                  <div className="text-center py-8 text-slate-400 text-sm">監視対象ドラマがありません。<br/>上の「一括登録」から追加してください。</div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // 🌟 ユーザー管理画面の表示
   if (isUserManagement) {
     return (
@@ -673,6 +866,7 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
           {/* 🌟 管理者だけにボタンを表示 */}
           {isAdminUser && (
             <div className="flex gap-2 items-center">
+              <button onClick={() => { setIsDramaManagement(true); fetchDramas(dramaSeason); setDramaMessage(''); }} className="text-[11px] font-bold bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200">ドラマ管理</button>
               <button onClick={() => { setIsUserManagement(true); fetchUsers(); }} className="text-[11px] font-bold bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200">ユーザー管理</button>
               <button onClick={handleOpenAdmin} className="bg-white p-2 text-xl text-blue-600 hover:bg-blue-50 rounded-full transition-colors">⊕</button>
             </div>
