@@ -1,5 +1,4 @@
 import { createClient } from '@supabase/supabase-js';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
@@ -12,7 +11,58 @@ const fetchHeaders = {
   'Cache-Control': 'no-cache',
 };
 
-const normalize = (s: string) => s.replace(/[\s　・！!？?。、,.()\-―ー]/g, '').toLowerCase();
+const normalize = (s: string) => s.replace(/[\s　・！!？?。、,.()\-―ー〜~]/g, '').toLowerCase();
+
+// ドラマ詳細ページから「公式サイト」直後のリンクを抽出
+function extractOfficialFromDetail(html: string): { title: string | null; officialUrl: string | null } {
+  // 1. タイトル: h1 タグまたは <title> から取得
+  const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  let title: string | null = null;
+  if (h1Match) {
+    title = h1Match[1].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+  } else {
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (titleMatch) {
+      // "ドラマ名 | クランクイン!" のようなパターンから前半だけ取る
+      title = titleMatch[1].split(/[|｜]/)[0].trim();
+    }
+  }
+
+  // 2. 公式サイトURL: 「公式サイト」テキストの直後 ~500文字以内の <a href> を探す
+  const officialPatterns = [
+    /公式\s*(?:サイト|ホームページ|HP|hp)[\s\S]{0,800}?<a[^>]*?href=["']([^"']+)["']/i,
+    /<a[^>]*?href=["']([^"']+)["'][^>]*?>\s*公式\s*(?:サイト|ホームページ)\s*</i,
+  ];
+
+  let officialUrl: string | null = null;
+  for (const pat of officialPatterns) {
+    const m = html.match(pat);
+    if (m && m[1] && !m[1].includes('crank-in.net')) {
+      officialUrl = m[1];
+      break;
+    }
+  }
+
+  return { title, officialUrl };
+}
+
+// 並列度制限付きの並列処理
+async function parallelLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const idx = cursor++;
+      try {
+        results[idx] = await fn(items[idx]);
+      } catch (e) {
+        results[idx] = null as any;
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 export async function POST(req: Request) {
   try {
@@ -23,17 +73,11 @@ export async function POST(req: Request) {
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    const geminiKey = process.env.GEMINI_API_KEY;
-    if (!supabaseUrl || !supabaseKey || !geminiKey) throw new Error('環境変数不足');
+    if (!supabaseUrl || !supabaseKey) throw new Error('環境変数不足');
 
     const supabase = createClient(supabaseUrl, supabaseKey);
-    const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: { responseMimeType: 'application/json' },
-    });
 
-    // 1. URL未登録ドラマを取得
+    // 1. URL未登録ドラマ取得
     const { data: missingDramas, error: missingError } = await supabase
       .from('dramas')
       .select('id, title')
@@ -45,105 +89,47 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, season, missingTotal: 0, updated: 0, message: 'URL未登録のドラマはありません' });
     }
 
-    // 2. crank-in.netから取得
-    const url = `https://www.crank-in.net/drama/${season}`;
-    const res = await fetch(url, { headers: fetchHeaders });
-    if (!res.ok) throw new Error(`crank-in.net 取得失敗: HTTP ${res.status}`);
-    const html = await res.text();
+    // 2. 季節一覧ページを取得
+    const indexUrl = `https://www.crank-in.net/drama/${season}`;
+    const indexRes = await fetch(indexUrl, { headers: fetchHeaders });
+    if (!indexRes.ok) throw new Error(`crank-in.net 季節ページ取得失敗: HTTP ${indexRes.status}`);
+    const indexHtml = await indexRes.text();
 
-    // 3. <a>タグを保持したまま軽くクリーンアップ
-    // imgのalt属性は残す（ドラマカードのタイトルがalt属性に入っているケースが多いため）
-    const cleanHtml = html
-      .replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gmi, '')
-      .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gmi, '')
-      .replace(/<noscript\b[^>]*>([\s\S]*?)<\/noscript>/gmi, '')
-      .replace(/<svg\b[^>]*>([\s\S]*?)<\/svg>/gmi, '')
-      .replace(/<img\b[^>]*?\salt=["']([^"']+)["'][^>]*?\/?>/gmi, ' [画像alt:$1] ')
-      .replace(/<img\b[^>]*?\/?>/gmi, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .substring(0, 80000);
-
-    // 4. 6チャンク並列でtitle→URLペア抽出
-    const CHUNK_COUNT = 6;
-    const CHUNK_OVERLAP = 2500;
-    const totalLen = cleanHtml.length;
-    const chunkSize = Math.ceil(totalLen / CHUNK_COUNT);
-    const chunks: string[] = [];
-    for (let i = 0; i < CHUNK_COUNT; i++) {
-      const start = Math.max(0, i * chunkSize - CHUNK_OVERLAP);
-      const end = Math.min(totalLen, (i + 1) * chunkSize + CHUNK_OVERLAP);
-      chunks.push(cleanHtml.substring(start, end));
+    // 3. 詳細ページURL（/drama/{season}/{id}）を全部抽出
+    const detailUrlPattern = new RegExp(`/drama/${season}/(\\d+)`, 'g');
+    const detailIds = new Set<string>();
+    let m;
+    while ((m = detailUrlPattern.exec(indexHtml)) !== null) {
+      detailIds.add(m[1]);
     }
 
-    // 探したいタイトル一覧をプロンプトに含めて Gemini にピンポイント検索させる
-    const knownTitlesText = missingDramas.map((d: any) => `- ${d.title}`).join('\n');
+    if (detailIds.size === 0) {
+      return NextResponse.json({ success: false, error: '季節ページから詳細ページURLが1件も抽出できませんでした' }, { status: 500 });
+    }
 
-    const buildPrompt = (chunk: string, idx: number) => `
-これは crank-in.net 季節ドラマ一覧ページHTMLの一部 (${idx + 1}/${CHUNK_COUNT}) です。
-以下の「探したいドラマタイトル一覧」のうち、このHTML中に登場するドラマの公式サイトURLを取り出してください。
+    const detailUrls = Array.from(detailIds).map((id) => `https://www.crank-in.net/drama/${season}/${id}`);
 
-【探したいドラマタイトル一覧】
-${knownTitlesText}
+    // 4. 各詳細ページを並列取得（同時8接続まで）& title + officialUrl を抽出
+    const detailResults = await parallelLimit(detailUrls, 8, async (url) => {
+      const res = await fetch(url, { headers: fetchHeaders });
+      if (!res.ok) return null;
+      const html = await res.text();
+      const { title, officialUrl } = extractOfficialFromDetail(html);
+      if (!title || !officialUrl) return null;
+      return { detailUrl: url, title, officialUrl };
+    });
 
-【抽出ルール】
-- HTML中の <a href="..."> タグや [画像alt:...] からドラマカードの構造を理解する
-- ドラマタイトルは「探したいドラマタイトル一覧」のものと完全一致する形で出力（記号や空白も合わせる）
-- 公式URLは各テレビ局/制作会社のドメイン（fujitv.co.jp, tbs.co.jp, nhk.or.jp, tv-asahi.co.jp, ntv.co.jp, tv-tokyo.co.jp, mbs.jp, abc.co.jp, ytv.co.jp, ktv.jp, tokai-tv.com, ctv.co.jp 等）
-- crank-in.net 内部URLは絶対に含めない
-- ニュース記事/SNS/バナー広告のリンクは除外
-- 確信が持てないペアは出力しない
-- 該当HTMLでヒットしないタイトルは出力しなくて良い（チャンクなので一部しか含まない）
+    const validResults = detailResults.filter(Boolean) as { detailUrl: string; title: string; officialUrl: string }[];
 
-【出力JSON形式】
-{
-  "pairs": [
-    { "title": "(指定一覧と完全一致するタイトル)", "official_url": "https://公式URL" }
-  ]
-}
-
-【HTML断片】
-${chunk}
-`;
-
-    const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
-      Promise.race<T | null>([
-        p,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
-      ]);
-
-    const chunkResults = await Promise.all(
-      chunks.map(async (chunk, idx) => {
-        try {
-          const result = await withTimeout(model.generateContent(buildPrompt(chunk, idx)), 60000);
-          if (!result) return [];
-          const text = await result.response.text();
-          const s = text.indexOf('{');
-          const e = text.lastIndexOf('}') + 1;
-          if (s < 0 || e <= s) return [];
-          const parsed = JSON.parse(text.substring(s, e));
-          return Array.isArray(parsed.pairs) ? parsed.pairs : [];
-        } catch {
-          return [];
-        }
-      })
-    );
-
-    // 5. Title→URLマップ作成（先勝ち）。crank-in.net自身のURLは弾く
+    // 5. title→officialUrlマップ（正規化込み）
     const titleToUrl = new Map<string, string>();
-    const normMap = new Map<string, string>(); // normalized title → URL
-    for (const arr of chunkResults) {
-      for (const p of arr) {
-        if (!p?.title || !p?.official_url) continue;
-        if (p.official_url.includes('crank-in.net')) continue;
-        if (!titleToUrl.has(p.title)) {
-          titleToUrl.set(p.title, p.official_url);
-          normMap.set(normalize(p.title), p.official_url);
-        }
-      }
+    const normMap = new Map<string, string>();
+    for (const r of validResults) {
+      titleToUrl.set(r.title, r.officialUrl);
+      normMap.set(normalize(r.title), r.officialUrl);
     }
 
-    // 6. 並列UPDATE（マッチしたものだけ）
+    // 6. DBの未登録ドラマとマッチング & UPDATE
     const matched: { title: string; url: string }[] = [];
     const unmatched: string[] = [];
 
@@ -170,8 +156,9 @@ ${chunk}
       success: true,
       season,
       missingTotal: missingDramas.length,
+      detailPagesFound: detailIds.size,
+      detailPagesParsed: validResults.length,
       updated,
-      pairsExtracted: titleToUrl.size,
       matched,
       unmatched,
     });
