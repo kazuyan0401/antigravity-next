@@ -42,9 +42,13 @@ export async function POST(req: Request) {
       .replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gmi, '')
       .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gmi, '')
       .replace(/<noscript\b[^>]*>([\s\S]*?)<\/noscript>/gmi, '')
+      .replace(/<header\b[^>]*>([\s\S]*?)<\/header>/gmi, '')
+      .replace(/<footer\b[^>]*>([\s\S]*?)<\/footer>/gmi, '')
+      .replace(/<svg\b[^>]*>([\s\S]*?)<\/svg>/gmi, '')
+      .replace(/<img\b[^>]*>/gmi, '')
       .replace(/\s+/g, ' ')
       .trim()
-      .substring(0, 80000);
+      .substring(0, 30000);
 
     const prompt = `
 以下のHTMLは crank-in.net の季節ドラマ一覧ページです。
@@ -84,25 +88,22 @@ ${cleanHtml}
       return NextResponse.json({ success: false, error: 'ドラマが1件も抽出できませんでした' }, { status: 500 });
     }
 
-    let inserted = 0;
+    // 既存タイトル一括取得（1クエリ）
+    const { data: existingRows } = await supabase
+      .from('dramas')
+      .select('title')
+      .eq('season', season);
+    const existingTitles = new Set((existingRows || []).map((r: any) => r.title));
+
+    // 重複・無効を除外して挿入用配列を作る
+    const toInsert: any[] = [];
     let skipped = 0;
-    const errors: string[] = [];
 
     for (const d of dramas) {
       if (!d.title) { skipped++; continue; }
-
-      const { data: existing } = await supabase
-        .from('dramas')
-        .select('id')
-        .eq('title', d.title)
-        .eq('season', season)
-        .maybeSingle();
-
-      if (existing) { skipped++; continue; }
-
+      if (existingTitles.has(d.title)) { skipped++; continue; }
       const air_day_of_week = d.air_day && DAY_MAP[d.air_day] !== undefined ? DAY_MAP[d.air_day] : null;
-
-      const { error } = await supabase.from('dramas').insert([{
+      toInsert.push({
         title: d.title,
         network: d.network || null,
         official_url: d.official_url || null,
@@ -111,22 +112,27 @@ ${cleanHtml}
         air_time: d.air_time || null,
         season,
         enabled: true,
-      }]);
+      });
+    }
 
+    let inserted = 0;
+    let insertError: string | null = null;
+    if (toInsert.length > 0) {
+      const { error } = await supabase.from('dramas').insert(toInsert);
       if (error) {
-        errors.push(`${d.title}: ${error.message}`);
+        insertError = error.message;
       } else {
-        inserted++;
+        inserted = toInsert.length;
       }
     }
 
     return NextResponse.json({
-      success: true,
+      success: !insertError,
       season,
       total: dramas.length,
       inserted,
       skipped,
-      errors,
+      error: insertError,
     });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
