@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const fetchHeaders = {
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -90,11 +90,18 @@ export async function POST(req: Request) {
 ${chunk}
 `;
 
-    // 全チャンクを並列でGemini呼び出し
+    // 全チャンクを並列でGemini呼び出し（各60秒で打ち切り）
+    const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
+      Promise.race<T | null>([
+        p,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+      ]);
+
     const chunkResults = await Promise.all(
       chunks.map(async (chunk, idx) => {
         try {
-          const result = await model.generateContent(buildPrompt(chunk, idx));
+          const result = await withTimeout(model.generateContent(buildPrompt(chunk, idx)), 60000);
+          if (!result) return [];
           const text = await result.response.text();
           const s = text.indexOf('{');
           const e = text.lastIndexOf('}') + 1;
