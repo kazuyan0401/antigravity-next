@@ -52,11 +52,14 @@ export async function POST(req: Request) {
     const html = await res.text();
 
     // 3. <a>タグを保持したまま軽くクリーンアップ
+    // imgのalt属性は残す（ドラマカードのタイトルがalt属性に入っているケースが多いため）
     const cleanHtml = html
       .replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gmi, '')
       .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gmi, '')
       .replace(/<noscript\b[^>]*>([\s\S]*?)<\/noscript>/gmi, '')
       .replace(/<svg\b[^>]*>([\s\S]*?)<\/svg>/gmi, '')
+      .replace(/<img\b[^>]*?\salt=["']([^"']+)["'][^>]*?\/?>/gmi, ' [画像alt:$1] ')
+      .replace(/<img\b[^>]*?\/?>/gmi, '')
       .replace(/\s+/g, ' ')
       .trim()
       .substring(0, 80000);
@@ -73,22 +76,29 @@ export async function POST(req: Request) {
       chunks.push(cleanHtml.substring(start, end));
     }
 
+    // 探したいタイトル一覧をプロンプトに含めて Gemini にピンポイント検索させる
+    const knownTitlesText = missingDramas.map((d: any) => `- ${d.title}`).join('\n');
+
     const buildPrompt = (chunk: string, idx: number) => `
 これは crank-in.net 季節ドラマ一覧ページHTMLの一部 (${idx + 1}/${CHUNK_COUNT}) です。
-このチャンクに含まれる「ドラマタイトル」と「ドラマ公式サイトURL」のペアを抽出してください。
+以下の「探したいドラマタイトル一覧」のうち、このHTML中に登場するドラマの公式サイトURLを取り出してください。
+
+【探したいドラマタイトル一覧】
+${knownTitlesText}
 
 【抽出ルール】
-- 各テレビ局/制作会社の公式サイトURL（例: fujitv.co.jp, tbs.co.jp, nhk.or.jp, tv-asahi.co.jp, ntv.co.jp, tv-tokyo.co.jp, mbs.jp, abc.co.jp, ytv.co.jp, ktv.jp, tokai-tv.com, ctv.co.jp 等）
-- crank-in.net内部URL (crank-in.net/...) は絶対に含めない
-- ニュース記事リンク、SNS、広告、関連バナーは除外
-- HTMLのリンク構造から、タイトルと公式URLが対応していることが明らかなペアのみ
-- ドラマタイトルは公式サイトのリンクテキストや近接テキストから読み取る
-- 確信が持てないペアは出力しない（質優先）
+- HTML中の <a href="..."> タグや [画像alt:...] からドラマカードの構造を理解する
+- ドラマタイトルは「探したいドラマタイトル一覧」のものと完全一致する形で出力（記号や空白も合わせる）
+- 公式URLは各テレビ局/制作会社のドメイン（fujitv.co.jp, tbs.co.jp, nhk.or.jp, tv-asahi.co.jp, ntv.co.jp, tv-tokyo.co.jp, mbs.jp, abc.co.jp, ytv.co.jp, ktv.jp, tokai-tv.com, ctv.co.jp 等）
+- crank-in.net 内部URLは絶対に含めない
+- ニュース記事/SNS/バナー広告のリンクは除外
+- 確信が持てないペアは出力しない
+- 該当HTMLでヒットしないタイトルは出力しなくて良い（チャンクなので一部しか含まない）
 
 【出力JSON形式】
 {
   "pairs": [
-    { "title": "ドラマタイトル", "official_url": "https://公式URL" }
+    { "title": "(指定一覧と完全一致するタイトル)", "official_url": "https://公式URL" }
   ]
 }
 
