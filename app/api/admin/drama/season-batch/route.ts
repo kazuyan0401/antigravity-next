@@ -48,12 +48,12 @@ export async function POST(req: Request) {
       .replace(/<img\b[^>]*>/gmi, '')
       .replace(/\s+/g, ' ')
       .trim()
-      .substring(0, 30000);
+      .substring(0, 60000);
 
-    // HTMLを4チャンクに分割（重複1500文字込み）して並列処理
-    // → Geminiの出力生成時間(ボトルネック)を1/4に短縮
-    const CHUNK_COUNT = 4;
-    const CHUNK_OVERLAP = 1500;
+    // HTMLを6チャンクに分割（重複2500文字込み）して並列処理
+    // → Geminiの出力生成時間(ボトルネック)を1/6に短縮
+    const CHUNK_COUNT = 6;
+    const CHUNK_OVERLAP = 2500;
     const totalLen = cleanHtml.length;
     const chunkSize = Math.ceil(totalLen / CHUNK_COUNT);
     const chunks: string[] = [];
@@ -74,8 +74,10 @@ export async function POST(req: Request) {
 - air_time は "21:00" 等。深夜枠 "25:29" 等もそのまま
 - is_daily は「帯ドラマ」「連続テレビ小説」「朝ドラ」等、月-土または毎日放送なら true
 - network は「フジテレビ系」「TBS系」「NHK」など
-- このチャンクで完全な情報が取れないドラマは出力しない（タイトルだけは必須）
-- 「2026年春ドラマ」というメタ情報や「ニュース記事」「コラム」等は無視
+- 【重要】タイトルさえ取れたら必ず出力する。不明項目は null でOK（網羅性最優先、取りこぼし禁止）
+- ドラマ本編・大河ドラマ・連続テレビ小説・帯ドラマ・深夜ドラマ・配信ドラマ全てを対象に含める
+- 「2026年春ドラマ」「ニュース記事」「コラム」「広告」等のメタ要素は無視
+- 同じドラマが複数回登場する場合は1回だけ（タイトルで判定）
 
 【出力JSON形式】
 {
