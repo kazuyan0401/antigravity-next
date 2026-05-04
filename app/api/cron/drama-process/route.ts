@@ -60,21 +60,94 @@ export async function GET(req: Request) {
 
     try {
 
+    // HTMLからテキストへ整形するヘルパー
+    const stripHtml = (html: string, maxLen: number) =>
+      html
+        .replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gmi, '')
+        .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gmi, '')
+        .replace(/<[^>]*>?/gm, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .substring(0, maxLen);
+
+    // ホームHTMLからエピソード/ストーリーサブページのURLを発見
+    // 同一ドメイン内の /story/{n}/, /episode/{n}/, /next/, /preview/ 等を抽出
+    const findEpisodeSubpages = (homeHtml: string, baseUrl: string): string[] => {
+      const candidates: string[] = [];
+      const baseObj = new URL(baseUrl);
+
+      // (1) 番号付きエピソードページ: /story/01/, /episode/3/, /stories/2/
+      const numberedPattern = /href=["']([^"']*?\/(?:story|stories|episode|episodes|onair|onair_story)\/(\d+)\/?[^"']*?)["']/gi;
+      const byPath = new Map<string, { num: number; url: string }>();
+      let m: RegExpExecArray | null;
+      while ((m = numberedPattern.exec(homeHtml)) !== null) {
+        const num = parseInt(m[2], 10);
+        if (isNaN(num) || num < 1 || num > 50) continue;
+        let fullUrl: string;
+        try {
+          fullUrl = new URL(m[1], baseUrl).toString();
+        } catch { continue; }
+        // 別ドメインは除外
+        try {
+          if (new URL(fullUrl).hostname !== baseObj.hostname) continue;
+        } catch { continue; }
+        // 番号より前のパス部分でグループ化し最大話数を選ぶ
+        const pathPrefix = fullUrl.replace(/\d+\/?[^/]*$/, '');
+        const existing = byPath.get(pathPrefix);
+        if (!existing || num > existing.num) {
+          byPath.set(pathPrefix, { num, url: fullUrl });
+        }
+      }
+      for (const v of byPath.values()) candidates.push(v.url);
+
+      // (2) 次回予告・ストーリー全般ページ: /next/, /preview/, /story/, /story.html
+      const namedPattern = /href=["']([^"']*?\/(?:next|preview|onair|story|stories|nextstory)\/?(?:[^"']*?\.html?)?)["']/gi;
+      while ((m = namedPattern.exec(homeHtml)) !== null) {
+        let fullUrl: string;
+        try {
+          fullUrl = new URL(m[1], baseUrl).toString();
+        } catch { continue; }
+        try {
+          if (new URL(fullUrl).hostname !== baseObj.hostname) continue;
+        } catch { continue; }
+        if (!candidates.includes(fullUrl)) candidates.push(fullUrl);
+      }
+
+      // 重複除外、ホームURL自身は除外、最大2件まで
+      const uniq = Array.from(new Set(candidates)).filter((u) => u !== baseUrl && u !== baseUrl + '/');
+      return uniq.slice(0, 2);
+    };
+
     // 公式サイト取得（失敗してもメタデータだけで処理続行）
     let officialContent = '';
     let officialFetchError = '';
+    let subpagesFetched: string[] = [];
     if (drama.official_url) {
       try {
         const r = await fetch(drama.official_url, { headers: fetchHeaders });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const html = await r.text();
-        officialContent = html
-          .replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gmi, '')
-          .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gmi, '')
-          .replace(/<[^>]*>?/gm, ' ')
-          .replace(/\s+/g, ' ')
-          .trim()
-          .substring(0, 5000);
+        officialContent = `【ホームページ】\n${stripHtml(html, 4000)}`;
+
+        // 最新話/次回予告サブページを並列取得（最大2件）
+        const subUrls = findEpisodeSubpages(html, drama.official_url);
+        const subResults = await Promise.all(
+          subUrls.map(async (subUrl) => {
+            try {
+              const sr = await fetch(subUrl, { headers: fetchHeaders });
+              if (!sr.ok) return null;
+              const sh = await sr.text();
+              return { url: subUrl, text: stripHtml(sh, 3000) };
+            } catch {
+              return null;
+            }
+          })
+        );
+        for (const sub of subResults) {
+          if (!sub) continue;
+          subpagesFetched.push(sub.url);
+          officialContent += `\n\n【サブページ ${sub.url}】\n${sub.text}`;
+        }
       } catch (e: any) {
         officialFetchError = e.message;
       }
@@ -100,8 +173,16 @@ export async function GET(req: Request) {
 - 季節: ${drama.season || '不明'}
 - 取得日時: ${nowJst}
 
-【公式サイトから取得した情報】
+【公式サイトから取得した情報（複数ページの可能性あり）】
 ${officialContent || '（公式サイト取得不可：' + (officialFetchError || 'URL未登録') + '）'}
+
+🚨【最重要：今日放送される最新話に焦点を合わせる】🚨
+取得情報の中に「次回予告」「第N話」「ストーリー」「あらすじ」「ゲスト」「サブタイトル」等の**今日放送回特有の情報**があれば、それを最優先で投稿に反映してください。
+- 例: 「今夜の第3話、〇〇がついに△△する展開ヤバい」「今夜のゲストは□□さん！」「次回予告で見せた◯◯のシーンが気になりすぎる」
+- 第N話の話数・サブタイトル・ゲスト出演者・あらすじ等が判明しているなら必ず触れる
+- 第1話（初回放送）の場合は「ついに今夜スタート」の文脈で
+- 最終回付近なら「最終話/最終章」の特別感を強調
+- 最新話情報が見つからない場合のみ、ドラマ全体の見どころで構成
 
 🚨【絶対ルール】🚨
 1. tweet_1 / tweet_2 / tweet_3 の役割を厳格に分けること（後述）
@@ -201,6 +282,7 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
       success: true,
       drama: drama.title,
       official_fetch: officialContent ? 'ok' : `failed: ${officialFetchError || 'no url'}`,
+      subpages_fetched: subpagesFetched,
     });
     } catch (innerErr: any) {
       // 処理途中で失敗したらキューを failed にマーク
