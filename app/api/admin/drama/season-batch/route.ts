@@ -50,39 +50,71 @@ export async function POST(req: Request) {
       .trim()
       .substring(0, 30000);
 
-    const prompt = `
-以下のHTMLは crank-in.net の季節ドラマ一覧ページです。
-掲載されている全ドラマの情報を抽出し、JSON配列で出力してください。
+    // HTMLを4チャンクに分割（重複1500文字込み）して並列処理
+    // → Geminiの出力生成時間(ボトルネック)を1/4に短縮
+    const CHUNK_COUNT = 4;
+    const CHUNK_OVERLAP = 1500;
+    const totalLen = cleanHtml.length;
+    const chunkSize = Math.ceil(totalLen / CHUNK_COUNT);
+    const chunks: string[] = [];
+    for (let i = 0; i < CHUNK_COUNT; i++) {
+      const start = Math.max(0, i * chunkSize - CHUNK_OVERLAP);
+      const end = Math.min(totalLen, (i + 1) * chunkSize + CHUNK_OVERLAP);
+      chunks.push(cleanHtml.substring(start, end));
+    }
+
+    const buildPrompt = (chunk: string, idx: number) => `
+これは crank-in.net 季節ドラマ一覧ページHTMLの一部（${idx + 1}/${CHUNK_COUNT} チャンク）です。
+このチャンクに含まれるドラマ情報のみを抽出し、JSON配列で出力してください。
 
 【抽出ルール】
 - 各ドラマについて、title, network, official_url, air_day, air_time, is_daily を抽出
-- official_url は外部公式サイトURL（crank-in.net内ではなく、各ドラマのテレビ局/制作公式サイト）
-- 公式サイトURLが見当たらない場合は null
-- air_day は「日/月/火/水/木/金/土」の漢字1文字。帯ドラマや毎日放送なら null
-- air_time は "21:00" のような24時間表記文字列。深夜枠の "25:29" 等もそのまま
-- is_daily は「帯ドラマ」「連続テレビ小説」「朝ドラ」等、月-土または毎日放送なら true、通常週1なら false
-- network は「フジテレビ系」「TBS系」「NHK」など放送局名
-- 重複は除外
-- 情報が不明確なドラマも含めて全部出力（不明項目は null）
+- official_url は外部公式サイトURL（crank-in.net内ではなく、各ドラマのテレビ局/制作公式サイト）。見つからなければ null
+- air_day は「日/月/火/水/木/金/土」の漢字1文字。HTML中に明記されていない or 帯ドラマなら null
+- air_time は "21:00" 等。深夜枠 "25:29" 等もそのまま
+- is_daily は「帯ドラマ」「連続テレビ小説」「朝ドラ」等、月-土または毎日放送なら true
+- network は「フジテレビ系」「TBS系」「NHK」など
+- このチャンクで完全な情報が取れないドラマは出力しない（タイトルだけは必須）
+- 「2026年春ドラマ」というメタ情報や「ニュース記事」「コラム」等は無視
 
 【出力JSON形式】
 {
   "dramas": [
-    { "title": "...", "network": "...", "official_url": "...", "air_day": "月", "air_time": "21:00", "is_daily": false },
-    ...
+    { "title": "...", "network": "...", "official_url": "...", "air_day": "月", "air_time": "21:00", "is_daily": false }
   ]
 }
 
-【HTML】
-${cleanHtml}
+【HTML断片】
+${chunk}
 `;
 
-    const result = await model.generateContent(prompt);
-    const responseText = await result.response.text();
-    const jsonStart = responseText.indexOf('{');
-    const jsonEnd = responseText.lastIndexOf('}') + 1;
-    const parsed = JSON.parse(responseText.substring(jsonStart, jsonEnd));
-    const dramas: any[] = parsed.dramas || [];
+    // 全チャンクを並列でGemini呼び出し
+    const chunkResults = await Promise.all(
+      chunks.map(async (chunk, idx) => {
+        try {
+          const result = await model.generateContent(buildPrompt(chunk, idx));
+          const text = await result.response.text();
+          const s = text.indexOf('{');
+          const e = text.lastIndexOf('}') + 1;
+          if (s < 0 || e <= s) return [];
+          const parsed = JSON.parse(text.substring(s, e));
+          return Array.isArray(parsed.dramas) ? parsed.dramas : [];
+        } catch (err) {
+          return [];
+        }
+      })
+    );
+
+    // タイトルでマージ（先勝ち）
+    const seenByTitle = new Map<string, any>();
+    for (const arr of chunkResults) {
+      for (const d of arr) {
+        if (d?.title && !seenByTitle.has(d.title)) {
+          seenByTitle.set(d.title, d);
+        }
+      }
+    }
+    const dramas: any[] = Array.from(seenByTitle.values());
 
     if (dramas.length === 0) {
       return NextResponse.json({ success: false, error: 'ドラマが1件も抽出できませんでした' }, { status: 500 });
