@@ -44,6 +44,7 @@ export default function Home() {
   const [dramaMessage, setDramaMessage] = useState('');
   const [queueStatus, setQueueStatus] = useState<any>(null);
   const [seasonBatchLoading, setSeasonBatchLoading] = useState(false);
+  const [urlBackfillLoading, setUrlBackfillLoading] = useState(false);
   // 🌟 ここから追加：編集機能用のステートと関数
   const [isEditing, setIsEditing] = useState(false);
   const [editData, setEditData] = useState<any>(null);
@@ -209,6 +210,33 @@ export default function Home() {
       setDramaMessage('通信エラーが発生しました');
     } finally {
       setSeasonBatchLoading(false);
+    }
+  };
+
+  const handleUrlBackfill = async () => {
+    if (!confirm(`${dramaSeason} のURL未登録ドラマに対して公式サイトURLを一括補充します。よろしいですか？`)) return;
+    setUrlBackfillLoading(true);
+    setDramaMessage('crank-in.netからURLペアを抽出中...しばらくお待ちください');
+    try {
+      const res = await fetch('/api/admin/drama/url-backfill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ season: dramaSeason }),
+      });
+      const result = await res.json();
+      if (result.success) {
+        const unmatchedSummary = result.unmatched && result.unmatched.length > 0
+          ? `\n未マッチ${result.unmatched.length}本: ${result.unmatched.slice(0, 5).join(' / ')}${result.unmatched.length > 5 ? ' ...' : ''}`
+          : '';
+        setDramaMessage(`URL補充完了: ${result.updated}/${result.missingTotal}本 更新${unmatchedSummary}`);
+        fetchDramas(dramaSeason);
+      } else {
+        setDramaMessage(`エラー: ${result.error}`);
+      }
+    } catch (err) {
+      setDramaMessage('通信エラーが発生しました');
+    } finally {
+      setUrlBackfillLoading(false);
     }
   };
 
@@ -619,12 +647,19 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
               </select>
               <button
                 onClick={handleSeasonBatch}
-                disabled={seasonBatchLoading}
+                disabled={seasonBatchLoading || urlBackfillLoading}
                 className="px-5 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 transition-colors text-sm whitespace-nowrap"
               >
                 {seasonBatchLoading ? '取得中...' : '一括登録'}
               </button>
             </div>
+            <button
+              onClick={handleUrlBackfill}
+              disabled={seasonBatchLoading || urlBackfillLoading}
+              className="w-full py-2.5 rounded-xl font-bold text-orange-700 bg-orange-50 hover:bg-orange-100 disabled:bg-slate-100 disabled:text-slate-400 transition-colors text-xs"
+            >
+              {urlBackfillLoading ? 'URL抽出中...' : '🔗 公式URL補充（URL未登録ドラマだけを対象）'}
+            </button>
             {dramaMessage && <p className="mt-2 text-xs font-bold text-blue-600 whitespace-pre-wrap">{dramaMessage}</p>}
           </div>
 
