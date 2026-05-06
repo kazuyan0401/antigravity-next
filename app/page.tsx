@@ -392,11 +392,13 @@ export default function Home() {
     if (!selectedItem) return;
     setIsGenerating(true);
     try {
+      const storedUrl: string = selectedItem.original_url || '';
+      const regenInput = storedUrl.startsWith('keyword:') ? storedUrl.slice('keyword:'.length) : storedUrl;
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          url: selectedItem.original_url, 
+        body: JSON.stringify({
+          url: regenInput,
           // 🌟 魔法の修正：AIへの強制命令の中に、現在のタイトルを直接「変数」として埋め込む！
           memo: `【再生成】より自然でプロらしい分析に直してください。
 🚨【超重要・絶対厳守】🚨
@@ -861,14 +863,15 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
         <div className="bg-white p-8 rounded-3xl shadow-xl w-full max-w-md">
           <h2 className="text-xl font-bold mb-6 text-center text-slate-800">新ネタを投入</h2>
           <div className="mb-4">
-            <label className="block text-xs font-bold text-slate-500 mb-2 ml-1">元ネタのURL <span className="text-red-500">*</span></label>
-            <input 
-              type="text" 
-              placeholder="ニュースや商品のURLをペースト"
+            <label className="block text-xs font-bold text-slate-500 mb-2 ml-1">元ネタのURL または キーワード <span className="text-red-500">*</span></label>
+            <input
+              type="text"
+              placeholder="例：URLをペースト / 嵐のニューシングル『FIVE』"
               className="w-full p-4 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
               value={inputUrl}
               onChange={(e) => setInputUrl(e.target.value)}
             />
+            <p className="text-[11px] text-slate-400 mt-2 ml-1">URL（http/https）を入れるとページを読み込み、文字列だけならそのままお題としてAIに渡します。</p>
           </div>
           <div className="mb-8">
             <label className="block text-xs font-bold text-slate-500 mb-2 ml-1">補足・アフィリエイター視点（任意）</label>

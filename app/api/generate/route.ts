@@ -1,10 +1,17 @@
 import { createClient } from '@supabase/supabase-js';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
+
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
   try {
-    const { url, memo, id, title } = await req.json();
+    const { url: rawInput, memo, id, title } = await req.json();
+    const trimmedInput = (rawInput || "").trim();
+    if (!trimmedInput) {
+      return NextResponse.json({ success: false, error: "URLまたはキーワードを入力してください。" }, { status: 400 });
+    }
+    const isUrl = /^https?:\/\//i.test(trimmedInput);
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     const geminiKey = process.env.GEMINI_API_KEY;
@@ -14,32 +21,42 @@ export async function POST(req: Request) {
     }
 
     let contentText = "";
-    try {
-      const pageRes = await fetch(url, { 
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' } 
-      });
-      const html = await pageRes.text();
-      contentText = html.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gmi, "")
-                        .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gmi, "")
-                        .replace(/<[^>]*>?/gm, ' ')
-                        .replace(/\s+/g, ' ')
-                        .trim()
-                        .substring(0, 4000);
-    } catch (e) {
-      contentText = "";
+    if (isUrl) {
+      try {
+        const pageRes = await fetch(trimmedInput, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }
+        });
+        const html = await pageRes.text();
+        contentText = html.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gmi, "")
+                          .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gmi, "")
+                          .replace(/<[^>]*>?/gm, ' ')
+                          .replace(/\s+/g, ' ')
+                          .trim()
+                          .substring(0, 4000);
+      } catch (e) {
+        contentText = "";
+      }
     }
 
     const genAI = new GoogleGenerativeAI(geminiKey);
     const supabase = createClient(supabaseUrl, supabaseKey);
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-flash",
-      generationConfig: { responseMimeType: "application/json" }
+      generationConfig: { responseMimeType: "application/json" },
+      safetySettings: [
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+      ],
     });
     const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
 
-    const analysisInput = contentText.length > 100 
-      ? `【ページ内容】\n${contentText}` 
-      : `【⚠️警告】ページ内容の取得に失敗しました。URLからは詳細情報を読み取れません。`;
+    const analysisInput = isUrl
+      ? (contentText.length > 100
+          ? `【ページ内容】\n${contentText}`
+          : `【⚠️警告】ページ内容の取得に失敗しました。URLは ${trimmedInput} ですが、内容を読み取れませんでした。タイトル・補足を頼りに分析してください。`)
+      : `【運用者がフリー入力したネタ（URLではなくキーワード）】\n${trimmedInput}\n\n※これはWebページではなく、運用者が直接入力したお題です。固有名詞・商品名・番組名・楽曲名などはそのまま使用し、勝手に置き換えないこと。情報が足りない場合はキーワードから自然に推測して具体的に作成してください。`;
 
     const prompt = `
 あなたはX（旧Twitter）で月100万円以上を稼ぐプロのアフィリエイター、兼SNSアルゴリズム解析者です。
@@ -140,7 +157,7 @@ Amazonの他の出品者をクリック➡️(定価など)円のやつがAmazon
 必ずその番組名を最優先で拾い上げ、新しく出力するタイトル・理由・ツイート本文すべてに反映させてください。
 
 現在時刻:${now}
-【内容】\n${contentText}
+${analysisInput}
 【現在のタイトル（※ここに番組名があれば絶対に使用すること）】\n${title || 'なし'}
 【運用者からの補足】\n${memo || 'なし'}
 
@@ -163,11 +180,37 @@ Amazonの他の出品者をクリック➡️(定価など)円のやつがAmazon
 }
 `;
 
-    const result = await model.generateContent(prompt);
-    const responseText = await result.response.text();
+    let responseText = "";
+    try {
+      const result = await model.generateContent(prompt);
+      responseText = result.response.text();
+    } catch (aiError: any) {
+      const msg = String(aiError?.message || "");
+      console.error("Gemini生成エラー:", msg);
+      const reasonLabel = msg.includes("SAFETY")
+        ? "安全性フィルターによりブロックされました"
+        : msg.includes("RECITATION")
+          ? "AIが記事を引用しすぎたためブロックされました（別の記事URLでお試しください）"
+          : msg.includes("LANGUAGE")
+            ? "言語判定でブロックされました"
+            : "AI応答エラー";
+      return NextResponse.json({ success: false, error: `AI生成に失敗しました: ${reasonLabel}` }, { status: 500 });
+    }
+
     const jsonStart = responseText.indexOf('{');
     const jsonEnd = responseText.lastIndexOf('}') + 1;
-    const data = JSON.parse(responseText.substring(jsonStart, jsonEnd));
+    if (jsonStart === -1 || jsonEnd <= jsonStart) {
+      console.error("AI応答にJSONが含まれていません:", responseText.substring(0, 500));
+      return NextResponse.json({ success: false, error: "AIの応答からJSONを取り出せませんでした。再試行してください。" }, { status: 500 });
+    }
+
+    let data: any;
+    try {
+      data = JSON.parse(responseText.substring(jsonStart, jsonEnd));
+    } catch {
+      console.error("JSONパース失敗:", responseText.substring(0, 500));
+      return NextResponse.json({ success: false, error: "AIの応答が壊れていました（JSONパース失敗）。再試行してください。" }, { status: 500 });
+    }
 
     if (data.is_safe === false) {
       return NextResponse.json({ 
@@ -190,7 +233,7 @@ Amazonの他の出品者をクリック➡️(定価など)円のやつがAmazon
       tweet_2: data.tweet_2,
       tweet_3: data.tweet_3,
       cautions: data.cautions,
-      original_url: url
+      original_url: isUrl ? trimmedInput : `keyword:${trimmedInput}`
     };
 
     if (id) {
