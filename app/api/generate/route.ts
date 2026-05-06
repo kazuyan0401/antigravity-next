@@ -6,7 +6,13 @@ export const maxDuration = 60;
 
 const TRANSIENT_RE = /(503|UNAVAILABLE|Service Unavailable|overloaded|429|RESOURCE_EXHAUSTED|rate limit|deadline|ETIMEDOUT|ECONNRESET|fetch failed)/i;
 
-async function generateWithRetry(model: any, prompt: string, maxAttempts = 3): Promise<string> {
+const MODEL_CHAIN: { model: string; retries: number }[] = [
+  { model: "gemini-2.5-flash", retries: 2 },
+  { model: "gemini-2.5-flash-lite", retries: 1 },
+  { model: "gemini-2.0-flash", retries: 1 },
+];
+
+async function generateOnce(model: any, prompt: string, maxAttempts: number): Promise<string> {
   let lastErr: any;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -19,6 +25,27 @@ async function generateWithRetry(model: any, prompt: string, maxAttempts = 3): P
       const delay = 500 * Math.pow(3, attempt - 1);
       console.warn(`Gemini ${attempt}回目失敗、${delay}ms待機して再試行: ${msg.substring(0, 120)}`);
       await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
+async function generateWithFallback(
+  genAI: any,
+  prompt: string,
+  modelOptions: { generationConfig: any; safetySettings: any[] }
+): Promise<{ text: string; modelUsed: string }> {
+  let lastErr: any;
+  for (const cfg of MODEL_CHAIN) {
+    const model = genAI.getGenerativeModel({ model: cfg.model, ...modelOptions });
+    try {
+      const text = await generateOnce(model, prompt, cfg.retries + 1);
+      return { text, modelUsed: cfg.model };
+    } catch (err: any) {
+      lastErr = err;
+      const msg = String(err?.message || "");
+      if (!TRANSIENT_RE.test(msg)) throw err;
+      console.warn(`${cfg.model} 全リトライ失敗、次モデルへフォールバック: ${msg.substring(0, 120)}`);
     }
   }
   throw lastErr;
@@ -60,8 +87,7 @@ export async function POST(req: Request) {
 
     const genAI = new GoogleGenerativeAI(geminiKey);
     const supabase = createClient(supabaseUrl, supabaseKey);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
+    const modelOptions = {
       generationConfig: { responseMimeType: "application/json" },
       safetySettings: [
         { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
@@ -69,7 +95,7 @@ export async function POST(req: Request) {
         { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
         { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
       ],
-    });
+    };
     const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
 
     const analysisInput = isUrl
@@ -201,8 +227,11 @@ ${analysisInput}
 `;
 
     let responseText = "";
+    let modelUsed = MODEL_CHAIN[0].model;
     try {
-      responseText = await generateWithRetry(model, prompt);
+      const r = await generateWithFallback(genAI, prompt, modelOptions);
+      responseText = r.text;
+      modelUsed = r.modelUsed;
     } catch (aiError: any) {
       const msg = String(aiError?.message || "");
       console.error("Gemini生成エラー:", msg);
@@ -265,7 +294,7 @@ ${analysisInput}
       await supabase.from('posts').insert([insertData]);
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, modelUsed });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }

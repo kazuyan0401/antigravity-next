@@ -373,7 +373,10 @@ export default function Home() {
       });
       const result = await res.json();
       if (result.success) {
-        alert("AI生成と保存が完了しました！");
+        const fallbackNote = result.modelUsed && result.modelUsed !== 'gemini-2.5-flash'
+          ? `\n（AI混雑のため ${result.modelUsed} で生成。後で詳細画面の「AIで再分析」を押すと最新モデルで作り直せます）`
+          : '';
+        alert("AI生成と保存が完了しました！" + fallbackNote);
         setInputUrl('');
         setInputMemo('');
         fetchData();
@@ -411,7 +414,10 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
       });
       const result = await res.json();
       if (result.success) {
-        alert("最新AIで書き換えました！");
+        const fallbackNote = result.modelUsed && result.modelUsed !== 'gemini-2.5-flash'
+          ? `\n（AI混雑のため ${result.modelUsed} で生成。落ち着いた頃に再度「AIで再分析」を押すと最新モデルで作り直せます）`
+          : '';
+        alert("最新AIで書き換えました！" + fallbackNote);
         fetchData();
         setSelectedItem(null);
       } else {
