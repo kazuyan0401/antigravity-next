@@ -87,22 +87,23 @@ export async function POST(req: Request) {
 
     const genAI = new GoogleGenerativeAI(geminiKey);
     const supabase = createClient(supabaseUrl, supabaseKey);
-    const modelOptions = {
-      generationConfig: { responseMimeType: "application/json" },
-      safetySettings: [
-        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-      ],
-    };
+    const safetySettings = [
+      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+    ];
+    // キーワードモードはGoogle検索Groundingで最新情報を取得（JSONモードと併用不可なので外す）
+    const modelOptions = isUrl
+      ? { generationConfig: { responseMimeType: "application/json" }, safetySettings }
+      : { generationConfig: {}, safetySettings, tools: [{ google_search: {} } as any] };
     const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
 
     const analysisInput = isUrl
       ? (contentText.length > 100
           ? `【ページ内容】\n${contentText}`
           : `【⚠️警告】ページ内容の取得に失敗しました。URLは ${trimmedInput} ですが、内容を読み取れませんでした。タイトル・補足を頼りに分析してください。`)
-      : `【運用者がフリー入力したネタ（URLではなくキーワード）】\n${trimmedInput}\n\n※これはWebページではなく、運用者が直接入力したお題です。固有名詞・商品名・番組名・楽曲名などはそのまま使用し、勝手に置き換えないこと。情報が足りない場合はキーワードから自然に推測して具体的に作成してください。`;
+      : `【運用者がフリー入力したネタ（URLではなくキーワード）】\n${trimmedInput}\n\n🚨【最重要・必ずGoogle検索を実行すること】🚨\nこのお題は運用者が手入力したキーワードです。あなた自身の知識だけで書くと「すでに発売済みの曲を新譜と書く」「過去のイベントを今後の予定として書く」など事実誤認を起こします。必ずGoogle検索ツールでキーワードを検索し、最新の事実（発売日、放送日、開催日、現状の話題性）を確認してから書いてください。\n- もし検索結果から「すでに過去の出来事」と判明した場合は、リリース当時を振り返る切り口や関連グッズ訴求など、過去の話題でも自然に伸ばせる構成にすること。\n- 「新発売」「新曲」「待望の」「リリース」などの表現は、検索で公開日が今日〜直近数日と確認できた時のみ使うこと。\n- 検索しても情報が見つからない場合は、無理に作らず "is_safe": false を返すこと。\n- 固有名詞・商品名・番組名・楽曲名は検索結果に従い、表記を勝手に変えないこと。`;
 
     const prompt = `
 あなたはX（旧Twitter）で月100万円以上を稼ぐプロのアフィリエイター、兼SNSアルゴリズム解析者です。
@@ -208,6 +209,7 @@ ${analysisInput}
 【運用者からの補足】\n${memo || 'なし'}
 
 必ず以下のJSON形式のみで出力してください。ツイート案の中の改行は必ず「\n」を使って表現してください。
+🚨【出力ルール】出力は純粋なJSONオブジェクト1個だけ。前置き、後書き、\`\`\`json などのマークダウン装飾、引用元の脚注、説明文は一切含めないこと。
 {
   "is_safe": boolean,
   "title": "タイトル",
