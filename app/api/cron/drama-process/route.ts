@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const fetchHeaders = {
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -70,52 +70,84 @@ export async function GET(req: Request) {
         .trim()
         .substring(0, maxLen);
 
-    // ホームHTMLからエピソード/ストーリーサブページのURLを発見
-    // 同一ドメイン内の /story/{n}/, /episode/{n}/, /next/, /preview/ 等を抽出
+    // ホームHTMLからエピソード/ストーリー/ニュース/イントロサブページのURLを発見
+    // フジテレビ式 /story/index.html, /news/news07.html や日テレ/TBS/NHK系の各種パスに対応
     const findEpisodeSubpages = (homeHtml: string, baseUrl: string): string[] => {
-      const candidates: string[] = [];
       const baseObj = new URL(baseUrl);
+      const baseHomeNorm = (baseUrl.endsWith('/') ? baseUrl : baseUrl + '/').toLowerCase();
 
-      // (1) 番号付きエピソードページ: /story/01/, /episode/3/, /stories/2/
-      const numberedPattern = /href=["']([^"']*?\/(?:story|stories|episode|episodes|onair|onair_story)\/(\d+)\/?[^"']*?)["']/gi;
-      const byPath = new Map<string, { num: number; url: string }>();
+      // 全 href を抽出
+      const hrefs: string[] = [];
+      const hrefRe = /href=["']([^"']+)["']/gi;
       let m: RegExpExecArray | null;
-      while ((m = numberedPattern.exec(homeHtml)) !== null) {
-        const num = parseInt(m[2], 10);
-        if (isNaN(num) || num < 1 || num > 50) continue;
-        let fullUrl: string;
+      while ((m = hrefRe.exec(homeHtml)) !== null) {
+        hrefs.push(m[1]);
+      }
+
+      // 同一ドメインへ正規化
+      const sameDomain: string[] = [];
+      for (const h of hrefs) {
+        if (h.startsWith('#') || h.startsWith('mailto:') || h.startsWith('tel:') || h.startsWith('javascript:')) continue;
+        if (/\.(css|js|png|jpe?g|gif|svg|ico|webp|mp4|woff2?)(\?|$)/i.test(h)) continue;
+        let full: string;
+        try { full = new URL(h, baseUrl).toString(); } catch { continue; }
         try {
-          fullUrl = new URL(m[1], baseUrl).toString();
+          if (new URL(full).hostname !== baseObj.hostname) continue;
         } catch { continue; }
-        // 別ドメインは除外
-        try {
-          if (new URL(fullUrl).hostname !== baseObj.hostname) continue;
-        } catch { continue; }
-        // 番号より前のパス部分でグループ化し最大話数を選ぶ
-        const pathPrefix = fullUrl.replace(/\d+\/?[^/]*$/, '');
-        const existing = byPath.get(pathPrefix);
-        if (!existing || num > existing.num) {
-          byPath.set(pathPrefix, { num, url: fullUrl });
+        // 公式トップURL自身は除外
+        const norm = (full.endsWith('/') ? full : full + '/').toLowerCase();
+        if (norm === baseHomeNorm) continue;
+        sameDomain.push(full);
+      }
+
+      // カテゴリ判定 + 優先度スコア + 番号付きは最大番号のみ採用
+      type Item = { url: string; score: number; key: string; num: number };
+      const items: Item[] = [];
+      for (const url of sameDomain) {
+        const path = (() => { try { return new URL(url).pathname.toLowerCase(); } catch { return ''; } })();
+        let score = 0;
+        let key = '';
+        let num = 0;
+
+        // 番号付きエピソード: /story/01/, /episode/3/, /news/news07.html, /onair/05/
+        const numbered = path.match(/\/(story|stories|episode|episodes|onair|onair_story|news\/news|story\/story|episode\/episode)[\/\-_]*(\d{1,2})(?:\/|\.html?|$)/);
+        if (numbered) {
+          num = parseInt(numbered[2], 10);
+          if (num >= 1 && num <= 50) {
+            score = 110; // 番号付きが最優先（最新話のあらすじ・ゲスト情報）
+            key = `numbered:${numbered[1].split('/')[0]}`;
+          }
+        }
+
+        // 名前付きカテゴリ
+        if (score === 0) {
+          if (/\/(story|stories)(\/index\.html?|\/?$)/.test(path)) { score = 100; key = 'story-index'; }
+          else if (/\/news(\/index\.html?|\/?$)/.test(path)) { score = 95; key = 'news-index'; }
+          else if (/\/(introduction|intro)(\/index\.html?|\/?$)/.test(path)) { score = 80; key = 'intro'; }
+          else if (/\/(next|preview|nextstory)(\/index\.html?|\/?$)/.test(path)) { score = 90; key = 'next'; }
+          else if (/\/(cast|cast-staff|staff)(\/index\.html?|\/?$)/.test(path)) { score = 60; key = 'cast'; }
+          else if (/\/(topics|topic)(\/index\.html?|\/?$)/.test(path)) { score = 70; key = 'topics'; }
+          else if (/\/onair(\/index\.html?|\/?$)/.test(path)) { score = 85; key = 'onair'; }
+        }
+
+        if (score > 0) items.push({ url, score, key, num });
+      }
+
+      // key 別に集約。番号付きは最大 num のみ。それ以外は先勝ち
+      const byKey = new Map<string, Item>();
+      for (const it of items) {
+        const ex = byKey.get(it.key);
+        if (!ex) { byKey.set(it.key, it); continue; }
+        if (it.key.startsWith('numbered:')) {
+          if (it.num > ex.num) byKey.set(it.key, it);
         }
       }
-      for (const v of byPath.values()) candidates.push(v.url);
 
-      // (2) 次回予告・ストーリー全般ページ: /next/, /preview/, /story/, /story.html
-      const namedPattern = /href=["']([^"']*?\/(?:next|preview|onair|story|stories|nextstory)\/?(?:[^"']*?\.html?)?)["']/gi;
-      while ((m = namedPattern.exec(homeHtml)) !== null) {
-        let fullUrl: string;
-        try {
-          fullUrl = new URL(m[1], baseUrl).toString();
-        } catch { continue; }
-        try {
-          if (new URL(fullUrl).hostname !== baseObj.hostname) continue;
-        } catch { continue; }
-        if (!candidates.includes(fullUrl)) candidates.push(fullUrl);
-      }
-
-      // 重複除外、ホームURL自身は除外、最大2件まで
-      const uniq = Array.from(new Set(candidates)).filter((u) => u !== baseUrl && u !== baseUrl + '/');
-      return uniq.slice(0, 2);
+      // スコア降順 → 上位4件まで
+      return Array.from(byKey.values())
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 4)
+        .map((it) => it.url);
     };
 
     // 公式サイト取得（失敗してもメタデータだけで処理続行）
@@ -127,9 +159,9 @@ export async function GET(req: Request) {
         const r = await fetch(drama.official_url, { headers: fetchHeaders });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const html = await r.text();
-        officialContent = `【ホームページ】\n${stripHtml(html, 4000)}`;
+        officialContent = `【ホームページ】\n${stripHtml(html, 7000)}`;
 
-        // 最新話/次回予告サブページを並列取得（最大2件）
+        // 最新話/次回予告/ニュース/イントロのサブページを並列取得（最大4件）
         const subUrls = findEpisodeSubpages(html, drama.official_url);
         const subResults = await Promise.all(
           subUrls.map(async (subUrl) => {
@@ -137,7 +169,7 @@ export async function GET(req: Request) {
               const sr = await fetch(subUrl, { headers: fetchHeaders });
               if (!sr.ok) return null;
               const sh = await sr.text();
-              return { url: subUrl, text: stripHtml(sh, 3000) };
+              return { url: subUrl, text: stripHtml(sh, 5000) };
             } catch {
               return null;
             }
@@ -176,13 +208,15 @@ export async function GET(req: Request) {
 【公式サイトから取得した情報（複数ページの可能性あり）】
 ${officialContent || '（公式サイト取得不可：' + (officialFetchError || 'URL未登録') + '）'}
 
-🚨【最重要：今日放送される最新話に焦点を合わせる】🚨
-取得情報の中に「次回予告」「第N話」「ストーリー」「あらすじ」「ゲスト」「サブタイトル」等の**今日放送回特有の情報**があれば、それを最優先で投稿に反映してください。
+🚨【最重要：今日(${nowJst})が放送日 / 最新話に焦点を合わせる】🚨
+このcronは放送日当日に動いている。**ホームページに加えてサブページ（/story/, /news/, /intro/, /next/, /onair/ 等）の情報を必ず横断的に読み取り、第N話・サブタイトル・あらすじ・ゲスト出演者を抽出**してください。
+- サブページに「第◯話」「story01」「news07」など番号が見える場合、その**最大番号が今夜放送回**である可能性が極めて高い
+- 「次回予告」「あらすじ」「ゲスト」「サブタイトル」「story」「episode」「news」セクションの情報を最優先で投稿に反映
 - 例: 「今夜の第3話、〇〇がついに△△する展開ヤバい」「今夜のゲストは□□さん！」「次回予告で見せた◯◯のシーンが気になりすぎる」
-- 第N話の話数・サブタイトル・ゲスト出演者・あらすじ等が判明しているなら必ず触れる
 - 第1話（初回放送）の場合は「ついに今夜スタート」の文脈で
 - 最終回付近なら「最終話/最終章」の特別感を強調
-- 最新話情報が見つからない場合のみ、ドラマ全体の見どころで構成
+- 取得情報を**3回以上熟読**した上で、第N話情報が**本当に1ミリも書かれていない場合のみ**ドラマ全体の見どころに切り替える（安易にフォールバックしない）
+- キャスト・原作・主題歌情報がページ内にあるなら必ず拾う（捏造は厳禁、ただし"取れる情報を取り損なうのはもっと致命的"）
 
 🚨【絶対ルール】🚨
 1. tweet_1 / tweet_2 / tweet_3 の役割を厳格に分けること（後述）
