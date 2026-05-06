@@ -4,6 +4,26 @@ import { NextResponse } from 'next/server';
 
 export const maxDuration = 60;
 
+const TRANSIENT_RE = /(503|UNAVAILABLE|Service Unavailable|overloaded|429|RESOURCE_EXHAUSTED|rate limit|deadline|ETIMEDOUT|ECONNRESET|fetch failed)/i;
+
+async function generateWithRetry(model: any, prompt: string, maxAttempts = 3): Promise<string> {
+  let lastErr: any;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+    } catch (err: any) {
+      lastErr = err;
+      const msg = String(err?.message || "");
+      if (!TRANSIENT_RE.test(msg) || attempt === maxAttempts) throw err;
+      const delay = 500 * Math.pow(3, attempt - 1);
+      console.warn(`Gemini ${attempt}回目失敗、${delay}ms待機して再試行: ${msg.substring(0, 120)}`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 export async function POST(req: Request) {
   try {
     const { url: rawInput, memo, id, title } = await req.json();
@@ -182,18 +202,21 @@ ${analysisInput}
 
     let responseText = "";
     try {
-      const result = await model.generateContent(prompt);
-      responseText = result.response.text();
+      responseText = await generateWithRetry(model, prompt);
     } catch (aiError: any) {
       const msg = String(aiError?.message || "");
       console.error("Gemini生成エラー:", msg);
-      const reasonLabel = msg.includes("SAFETY")
-        ? "安全性フィルターによりブロックされました"
-        : msg.includes("RECITATION")
-          ? "AIが記事を引用しすぎたためブロックされました（別の記事URLでお試しください）"
-          : msg.includes("LANGUAGE")
-            ? "言語判定でブロックされました"
-            : "AI応答エラー";
+      const reasonLabel = /503|UNAVAILABLE|Service Unavailable|overloaded/i.test(msg)
+        ? "Gemini AIサーバが一時的に混雑しています。1〜2分待ってから再試行してください"
+        : /429|RESOURCE_EXHAUSTED|rate limit/i.test(msg)
+          ? "AI APIの利用上限に達しました。少し待ってから再試行してください"
+          : msg.includes("SAFETY")
+            ? "安全性フィルターによりブロックされました"
+            : msg.includes("RECITATION")
+              ? "AIが記事を引用しすぎたためブロックされました（別の記事URLでお試しください）"
+              : msg.includes("LANGUAGE")
+                ? "言語判定でブロックされました"
+                : `AI応答エラー（${msg.substring(0, 160)}）`;
       return NextResponse.json({ success: false, error: `AI生成に失敗しました: ${reasonLabel}` }, { status: 500 });
     }
 
