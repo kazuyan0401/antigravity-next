@@ -51,15 +51,25 @@ export async function GET(req: Request) {
     // tick 1 (15-29分): トレンド系（リサーチワークフロー）
     // tick 2 (30-44分): エンタメニュース1
     // tick 3 (45-59分): エンタメニュース2
+    // 昨日の日付（JST）を YYYY-MM-DD で生成（trend-calendar.com の日別アーカイブURL用）
+    // 当日URLは集計が完了するまで404を返すことが多いため、安定して取れる前日を使う
+    const yJst = new Date(jstDate.getTime() - 24 * 60 * 60 * 1000);
+    const yesterdayStr = `${yJst.getFullYear()}-${String(yJst.getMonth() + 1).padStart(2, '0')}-${String(yJst.getDate()).padStart(2, '0')}`;
+    const trendCalendarUrl = `https://jp.trend-calendar.com/trend/${yesterdayStr}.html`;
+
     const SCHEDULE: SourceDef[][] = [
       [
         { name: "価格.com テレビ紹介", url: "https://kakaku.com/tv/", type: "scraping_kakaku" },
         { name: "TVでた蔵", url: "https://datazoo.jp/", type: "scraping_datazoo" },
       ],
+      // 🌟 トレンド系：Xを倍にして強化（live + アーカイブ）。各サイクル4源中2源がX
       [
+        { name: "Xトレンド (live)", url: "https://twittrend.jp/", type: "scraping_x", isResearch: true },
+        { name: "Xトレンド (アーカイブ)", url: trendCalendarUrl, type: "scraping_tc_x", isResearch: true },
+        { name: "トレンドカレンダー Yahoo", url: trendCalendarUrl, type: "scraping_tc_yahoo", isResearch: true },
+        { name: "トレンドカレンダー Google", url: trendCalendarUrl, type: "scraping_tc_google", isResearch: true },
         { name: "Yahoo!リアルタイム", url: "https://search.yahoo.co.jp/realtime", type: "scraping_yahoo_rt", isResearch: true },
         { name: "Googleトレンド", url: "https://trends.google.co.jp/trending/rss?geo=JP", type: "rss", isResearch: true },
-        { name: "Xトレンド", url: "https://twittrend.jp/", type: "scraping_x", isResearch: true },
       ],
       [
         { name: "コミックナタリー", url: "https://natalie.mu/comic/feed/news", type: "rss" },
@@ -147,6 +157,61 @@ export async function GET(req: Request) {
           url: `https://search.yahoo.co.jp/realtime/search?p=${encodeURIComponent(kw)}`,
           keyword: kw,
         }));
+      } else if (source.type === "scraping_tc_x" || source.type === "scraping_tc_yahoo" || source.type === "scraping_tc_google") {
+        // trend-calendar.com の日別アーカイブから X / Yahoo / Google それぞれのセクションを抽出
+        const res = await fetch(source.url, { headers: fetchHeaders });
+        if (!res.ok) {
+          // 当日分が未公開の場合は何も拾えない（404 等）
+          items = [];
+        } else {
+          const html = await res.text();
+          const sectionId = source.type === "scraping_tc_x"
+            ? 'twitter'
+            : source.type === "scraping_tc_yahoo"
+              ? 'yahoo'
+              : 'google';
+          // 後続セクション（他のid=...）か、次のh2/h3、または記事終端まで
+          const sectionRe = new RegExp(`<div id="${sectionId}">[\\s\\S]*?(?=<div id="(?:twitter|yahoo|google)"|<h2|<h3|<aside|</article>)`);
+          const sm = html.match(sectionRe);
+          const labelMap: Record<string, string> = {
+            scraping_tc_x: 'Xトレンド(アーカイブ)',
+            scraping_tc_yahoo: 'Yahooトレンド(アーカイブ)',
+            scraping_tc_google: 'Googleトレンド(アーカイブ)',
+          };
+          const searchHostMap: Record<string, (kw: string) => string> = {
+            scraping_tc_x: kw => `https://x.com/search?q=${encodeURIComponent(kw)}`,
+            scraping_tc_yahoo: kw => `https://search.yahoo.co.jp/realtime/search?p=${encodeURIComponent(kw)}`,
+            scraping_tc_google: kw => `https://www.google.com/search?q=${encodeURIComponent(kw)}`,
+          };
+          if (sm) {
+            const section = sm[0];
+            // <a href="https://twitter.com/search?q=...">キーワード</a> 形式のリンクテキストを抽出
+            const linkRe = /<a[^>]+href="(?:https?:[^"]+)"[^>]*>([^<]{1,80})<\/a>/g;
+            const decodeEntities = (s: string) => s
+              .replace(/&amp;/g, '&')
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/&quot;/g, '"')
+              .replace(/&#39;/g, "'")
+              .replace(/&nbsp;/g, ' ');
+            const keywords: string[] = [];
+            let lm: RegExpExecArray | null;
+            while ((lm = linkRe.exec(section)) !== null) {
+              const kw = decodeEntities(lm[1]).trim();
+              if (kw && !keywords.includes(kw)) keywords.push(kw);
+              if (keywords.length >= 15) break;
+            }
+            const buildUrl = searchHostMap[source.type];
+            const labelPrefix = labelMap[source.type];
+            items = keywords.slice(0, 10).map(kw => ({
+              title: `${labelPrefix}: ${kw}`,
+              url: buildUrl(kw),
+              keyword: kw,
+            }));
+          } else {
+            items = [];
+          }
+        }
       }
     } catch (e) {
       console.error(`${source.name} 取得失敗`, e);
