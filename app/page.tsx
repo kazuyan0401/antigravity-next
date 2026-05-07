@@ -397,20 +397,42 @@ export default function Home() {
     try {
       const storedUrl: string = selectedItem.original_url || '';
       const regenInput = storedUrl.startsWith('keyword:') ? storedUrl.slice('keyword:'.length) : storedUrl;
+      const isDrama = selectedItem.category === 'ドラマ';
+
+      // ドラマ用に膨れたtitleから正式名のみ抽出（前後の【】や「（局名）」以降の煽り句を除去）
+      const extractCleanDramaName = (rawTitle: string): string => {
+        let t = (rawTitle || '').trim();
+        while (t.startsWith('【')) {
+          const end = t.indexOf('】');
+          if (end < 0) break;
+          t = t.substring(end + 1).trimStart();
+        }
+        const m = t.match(/^([^（(]+)/);
+        return (m ? m[1] : t).trim();
+      };
+
+      const memoText = isDrama
+        ? `【ドラマ再生成】このドラマの正式タイトルは「${extractCleanDramaName(selectedItem.title)}」のみ。
+🚨【超重要・絶対厳守】🚨
+- ドラマ名は「${extractCleanDramaName(selectedItem.title)}」のみを使うこと。「【〇〇放送中】」のような管理用見出し全文や「で〇〇主演」「を深掘り」「衝撃の」「見逃すな」等の装飾語句は**絶対に追加しない**。
+- 各tweet本文の冒頭に「【...】」のような見出し風プレフィックスを付けないこと。
+- 出力する title フィールドは「【放送時間】${extractCleanDramaName(selectedItem.title)}（放送局）」の3要素のみ。出演者名・煽り句・感嘆符は含めない。
+- 公式サイト（${storedUrl}）から最新話のあらすじ・ゲスト・主題歌情報を取得して、それを反映した自然な投稿文を書くこと。`
+        : `【再生成】より自然でプロらしい分析に直してください。
+🚨【超重要・絶対厳守】🚨
+このニュースの番組名や商品は「${selectedItem.title}」です。
+AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に禁止します。
+必ず、出力する【タイトル】【今注目する理由】【すべてのツイート本文】に、「${selectedItem.title}」の文字をそのまま確実に含めてください。`;
+
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: regenInput,
-          // 🌟 魔法の修正：AIへの強制命令の中に、現在のタイトルを直接「変数」として埋め込む！
-          memo: `【再生成】より自然でプロらしい分析に直してください。
-🚨【超重要・絶対厳守】🚨
-このニュースの番組名や商品は「${selectedItem.title}」です。
-AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に禁止します。
-必ず、出力する【タイトル】【今注目する理由】【すべてのツイート本文】に、「${selectedItem.title}」の文字をそのまま確実に含めてください。`, 
+          memo: memoText,
           id: selectedItem.id,
-          title: selectedItem.title 
-        }) 
+          title: isDrama ? extractCleanDramaName(selectedItem.title) : selectedItem.title
+        })
       });
       const result = await res.json();
       if (result.success) {
