@@ -1,8 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
+import { processDrama, DramaRecord } from '@/app/lib/drama-processor';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const TRANSIENT_RE = /(503|UNAVAILABLE|Service Unavailable|overloaded|429|RESOURCE_EXHAUSTED|rate limit|deadline|ETIMEDOUT|ECONNRESET|fetch failed)/i;
 
@@ -65,6 +66,53 @@ export async function POST(req: Request) {
 
     if (!supabaseUrl || !supabaseKey || !geminiKey) {
       throw new Error("環境変数が不足しています。");
+    }
+
+    // 🛡️ ドラマURL強制振り分け：URLが dramas.official_url に一致する場合は
+    // 必ず drama-processor 経由で生成する（旧ブラウザJSが古いmemoでこのエンドポイントを
+    // 叩いても、サーバ側で正しい経路に強制リダイレクトする保険）
+    if (isUrl) {
+      const supabaseEarly = createClient(supabaseUrl, supabaseKey);
+      const { data: dramaMatch } = await supabaseEarly
+        .from('dramas')
+        .select('id, title, network, official_url, air_day_of_week, is_daily, air_time, season')
+        .eq('official_url', trimmedInput)
+        .maybeSingle();
+      if (dramaMatch) {
+        try {
+          const genAIDrama = new GoogleGenerativeAI(geminiKey);
+          const result = await processDrama(dramaMatch as DramaRecord, genAIDrama);
+          const insertData = {
+            title: result.title,
+            category: result.category,
+            purpose: result.purpose,
+            time_status: result.time_status,
+            source_summary: result.source_summary,
+            why_now: result.why_now,
+            recommended_action: result.recommended_action,
+            affiliate_candidates: result.affiliate_candidates,
+            post_angles: result.post_angles,
+            tweet_1: result.tweet_1,
+            tweet_2: result.tweet_2,
+            tweet_3: result.tweet_3,
+            cautions: result.cautions,
+            original_url: result.original_url,
+          };
+          if (id) {
+            await supabaseEarly.from('posts').update(insertData).eq('id', id);
+          } else {
+            await supabaseEarly.from('posts').insert([insertData]);
+          }
+          return NextResponse.json({
+            success: true,
+            modelUsed: 'gemini-2.5-flash (drama-processor)',
+            data: insertData,
+            routedTo: 'drama-processor',
+          });
+        } catch (e: any) {
+          return NextResponse.json({ success: false, error: `drama-processor失敗: ${e.message}` }, { status: 500 });
+        }
+      }
     }
 
     let contentText = "";
