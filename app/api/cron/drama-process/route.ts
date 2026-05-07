@@ -150,10 +150,75 @@ export async function GET(req: Request) {
         .map((it) => it.url);
     };
 
+    // 同一オリジンのJSON/データエンドポイントを発見
+    // SPA系サイト（YTV, NTV, 一部フジ/TBS）はホームHTMLが空シェルで、
+    // /data/news.json /data/story.json /data/next.json 等にあらすじ・話数が入っている
+    const findJsonEndpoints = async (homeHtml: string, baseUrl: string): Promise<string[]> => {
+      const baseObj = new URL(baseUrl);
+      // ドラマ公式URLのパス配下に限定（例: /kimishike/）。ルート直下の局共通JSONは除外
+      const basePath = baseObj.pathname.endsWith('/') ? baseObj.pathname : baseObj.pathname + '/';
+      const isInScope = (absUrl: string): boolean => {
+        try {
+          const u = new URL(absUrl);
+          if (u.hostname !== baseObj.hostname) return false;
+          return u.pathname.startsWith(basePath);
+        } catch {
+          return false;
+        }
+      };
+      const candidates = new Set<string>();
+
+      const scanForJson = (text: string) => {
+        const re = /['"]([^'"\s<>]{2,200}\.json)(?:[?#][^'"]*)?['"]/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(text)) !== null) {
+          const p = m[1];
+          if (/^https?:\/\//i.test(p)) {
+            if (isInScope(p)) candidates.add(p);
+            continue;
+          }
+          if (p.startsWith('//')) continue; // 別オリジンの可能性が高いのでスキップ
+          try {
+            const abs = new URL(p, baseUrl).toString();
+            if (isInScope(abs)) candidates.add(abs);
+          } catch { /* noop */ }
+        }
+      };
+      scanForJson(homeHtml);
+
+      // 同一オリジンの.jsファイルを最大4本まで取得してスキャン
+      const scriptSrcs: string[] = [];
+      const srcRe = /<script[^>]+src=["']([^"']+\.js[^"']*)["']/gi;
+      let mm: RegExpExecArray | null;
+      while ((mm = srcRe.exec(homeHtml)) !== null) {
+        try {
+          const abs = new URL(mm[1], baseUrl).toString();
+          if (new URL(abs).hostname === baseObj.hostname) scriptSrcs.push(abs);
+        } catch { /* noop */ }
+      }
+      const uniqJs = Array.from(new Set(scriptSrcs)).slice(0, 4);
+      await Promise.all(uniqJs.map(async (src) => {
+        try {
+          const r = await fetch(src, { headers: fetchHeaders });
+          if (!r.ok) return;
+          const t = await r.text();
+          scanForJson(t.substring(0, 200000));
+        } catch { /* noop */ }
+      }));
+
+      // 既知の共通パス（YTV/NTV系で実績あり、他局でも空振り上等で試す）
+      for (const p of ['data/news.json', 'data/story.json', 'data/next.json', 'data/cast.json', 'data/intro.json', 'data/topics.json']) {
+        try { candidates.add(new URL(p, baseUrl).toString()); } catch { /* noop */ }
+      }
+
+      return Array.from(candidates).slice(0, 10);
+    };
+
     // 公式サイト取得（失敗してもメタデータだけで処理続行）
     let officialContent = '';
     let officialFetchError = '';
     let subpagesFetched: string[] = [];
+    let jsonEndpointsFetched: string[] = [];
     if (drama.official_url) {
       try {
         const r = await fetch(drama.official_url, { headers: fetchHeaders });
@@ -161,28 +226,140 @@ export async function GET(req: Request) {
         const html = await r.text();
         officialContent = `【ホームページ】\n${stripHtml(html, 7000)}`;
 
-        // 最新話/次回予告/ニュース/イントロのサブページを並列取得（最大4件）
+        // サブページ探索 と JSONエンドポイント発見を並列実行
         const subUrls = findEpisodeSubpages(html, drama.official_url);
-        const subResults = await Promise.all(
-          subUrls.map(async (subUrl) => {
-            try {
-              const sr = await fetch(subUrl, { headers: fetchHeaders });
-              if (!sr.ok) return null;
-              const sh = await sr.text();
-              return { url: subUrl, text: stripHtml(sh, 5000) };
-            } catch {
-              return null;
-            }
-          })
-        );
+        const [subResults, jsonUrls] = await Promise.all([
+          Promise.all(
+            subUrls.map(async (subUrl) => {
+              try {
+                const sr = await fetch(subUrl, { headers: fetchHeaders });
+                if (!sr.ok) return null;
+                const sh = await sr.text();
+                return { url: subUrl, text: stripHtml(sh, 5000) };
+              } catch {
+                return null;
+              }
+            })
+          ),
+          findJsonEndpoints(html, drama.official_url),
+        ]);
         for (const sub of subResults) {
           if (!sub) continue;
           subpagesFetched.push(sub.url);
           officialContent += `\n\n【サブページ ${sub.url}】\n${sub.text}`;
         }
+
+        // 発見したJSONエンドポイントを並列取得（軽量・大半は404でも問題なし）
+        const jsonResults = await Promise.all(
+          jsonUrls.map(async (jurl) => {
+            try {
+              const jr = await fetch(jurl, { headers: fetchHeaders });
+              if (!jr.ok) return null;
+              const jt = await jr.text();
+              const trimmed = jt.trim();
+              if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return null;
+              // 最低限の体裁チェック後、生テキストを切り詰めて添付
+              return { url: jurl, text: trimmed.substring(0, 5000) };
+            } catch {
+              return null;
+            }
+          })
+        );
+        for (const j of jsonResults) {
+          if (!j) continue;
+          jsonEndpointsFetched.push(j.url);
+          officialContent += `\n\n【データ ${j.url}】\n${j.text}`;
+        }
+
+        // サブページから第N話HTML（例: story/6.html）が news.json 内のリンクに見えた場合、追加で取得
+        const inlineEpisodeLinkRe = /["']([^"'\s]*\/(?:story|episode|news)[\/_-]?(\d{1,2})(?:\.html?)?)["']/gi;
+        const linkMap = new Map<number, string>();
+        let lm: RegExpExecArray | null;
+        while ((lm = inlineEpisodeLinkRe.exec(officialContent)) !== null) {
+          const n = parseInt(lm[2], 10);
+          if (n >= 1 && n <= 50) {
+            try {
+              const abs = new URL(lm[1], drama.official_url).toString();
+              if (new URL(abs).hostname === new URL(drama.official_url).hostname) {
+                if (!linkMap.has(n)) linkMap.set(n, abs);
+              }
+            } catch { /* noop */ }
+          }
+        }
+        // 最大話数のリンクのみ取得（既に subpagesFetched に含まれていなければ）
+        if (linkMap.size > 0) {
+          const maxN = Math.max(...Array.from(linkMap.keys()));
+          const targetUrl = linkMap.get(maxN)!;
+          if (!subpagesFetched.includes(targetUrl)) {
+            try {
+              const er = await fetch(targetUrl, { headers: fetchHeaders });
+              if (er.ok) {
+                const eh = await er.text();
+                officialContent += `\n\n【最新話ページ ${targetUrl}】\n${stripHtml(eh, 5000)}`;
+                subpagesFetched.push(targetUrl);
+              }
+            } catch { /* noop */ }
+          }
+        }
       } catch (e: any) {
         officialFetchError = e.message;
       }
+    }
+
+    // 取得済みコンテンツから最新話の番号を抽出
+    const extractEpisodeNumber = (text: string): number | null => {
+      const numbers: number[] = [];
+      const patterns: RegExp[] = [
+        /第\s*(\d{1,2})\s*話/g,
+        /"episode"\s*:\s*"?(\d{1,2})"?/g,
+        /episode[\s:_\-](\d{1,2})/gi,
+        /\/(?:story|episode|news|onair)[\/\-_]?(\d{1,2})(?:[/.]|$)/gi,
+      ];
+      for (const re of patterns) {
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(text)) !== null) {
+          const n = parseInt(m[1], 10);
+          if (n >= 1 && n <= 50) numbers.push(n);
+        }
+      }
+      if (numbers.length === 0) return null;
+      return Math.max(...numbers);
+    };
+    const episodeNumber = extractEpisodeNumber(officialContent);
+
+    // コンテンツ密度判定: JSON記号類を除いた純粋テキスト長
+    const contentDensity = officialContent.replace(/[{}\[\],:"]/g, '').replace(/\s+/g, ' ').trim().length;
+
+    // 情報が薄い時のSearch Groundingフォールバック
+    // 公式サイトから十分な情報が取れなかった場合、Gemini + Google検索で補完
+    let groundingNote = '';
+    if (contentDensity < 1500) {
+      try {
+        const groundingModel = genAI.getGenerativeModel({
+          model: 'gemini-2.5-flash',
+          tools: [{ google_search: {} } as any],
+        });
+        const gJst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+        const gToday = `${gJst.getFullYear()}年${gJst.getMonth() + 1}月${gJst.getDate()}日(${DOW_LABEL[gJst.getDay()]}曜日)`;
+        const epLabel = episodeNumber !== null ? `第${episodeNumber}話` : '最新話';
+        const networkLabel = drama.network ? `（${drama.network}）` : '';
+        const gPrompt = `今日は **${gToday}**（日本時間）です。今夜（または既に）放送のドラマ「${drama.title}」${networkLabel}の${epLabel}について、必ずGoogle検索で公式サイトや最新ニュースを確認してから以下を箇条書きで300〜600字でまとめてください。
+- 第何話か（公式表記そのまま）
+- あらすじ（公式サイトの本文に近い形で）
+- ゲスト出演者
+- 主題歌・OST情報（アーティスト名・曲名）
+- 放送時間
+- その他話題のポイント
+
+検索しても見つからない項目は推測せず「不明」と明記してください。捏造は厳禁。
+今日（${gToday}）放送なので「明日」ではなく「今夜」「本日」基準で書くこと。`;
+        const gRes = await groundingModel.generateContent(gPrompt);
+        const gText = gRes.response.text();
+        if (gText && gText.trim().length > 100) {
+          groundingNote = gText.trim().substring(0, 3000);
+          officialContent += `\n\n【Google検索による補完情報】\n${groundingNote}`;
+        }
+      } catch { /* グラウンディング失敗時はメインの生成にそのまま進む */ }
     }
 
     const airLabel = drama.is_daily
@@ -191,11 +368,32 @@ export async function GET(req: Request) {
           ? `${DOW_LABEL[drama.air_day_of_week]}曜${drama.air_time || ''}`
           : '放送時間未定');
 
-    const nowJst = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+    // JSTの日付・曜日を取得（誤認防止のため明示的に展開）
+    const jstNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+    const jstYear = jstNow.getFullYear();
+    const jstMonth = jstNow.getMonth() + 1;
+    const jstDate = jstNow.getDate();
+    const jstDow = jstNow.getDay();
+    const jstHour = jstNow.getHours();
+    const jstMinute = jstNow.getMinutes();
+    const todayLabel = `${jstYear}年${jstMonth}月${jstDate}日(${DOW_LABEL[jstDow]}曜日)`;
+    const nowJst = `${todayLabel} ${jstHour}時${String(jstMinute).padStart(2, '0')}分`;
+
+    const episodeHint = episodeNumber !== null
+      ? `今夜放送は **第${episodeNumber}話**（取得情報から確定）。tweet_1には必ず「第${episodeNumber}話」を入れること。`
+      : '取得情報内に話数の手がかりが見つからない。1から内容を読み込み、明示的な「第N話」表記が無ければ無理に番号を入れない。';
 
     const prompt = `
 あなたはX（旧Twitter）で月100万円以上を稼ぐプロのアフィリエイター、兼SNSアルゴリズム解析者です。
 今日の放送予定ドラマについて、視聴者の興味を惹き、かつアフィリエイト収益化もできる投稿案を作成します。
+
+🚨【最初に確実に把握すべき日付】🚨
+**今日 = ${todayLabel}**（日本時間／システム時刻、絶対の事実）
+**現在時刻 = ${nowJst}**
+このcronは**放送日当日の早朝〜夜**に動いているので、放送日＝今日です。
+- ❌「明日放送の」「明日5月7日に」などは絶対に書かない（あなたの内部知識上では未来日に見えても、このシステム上は今日です）
+- ⭕️ 「今夜」「本日深夜」「今日の23:59から」「今夜の第N話」などの**今日基準の表現**を使う
+- 取得した公式サイトのcalendar_date / oa_date等の日付が今日と一致している＝今夜の放送回 と理解すること
 
 【ドラマ情報】
 - タイトル: ${drama.title}
@@ -204,15 +402,17 @@ export async function GET(req: Request) {
 - 公式サイト: ${drama.official_url || 'なし'}
 - 季節: ${drama.season || '不明'}
 - 取得日時: ${nowJst}
+- 話数ヒント: ${episodeHint}
 
-【公式サイトから取得した情報（複数ページの可能性あり）】
+【公式サイトから取得した情報（複数ページ／JSONエンドポイント／Google検索補完を含む）】
 ${officialContent || '（公式サイト取得不可：' + (officialFetchError || 'URL未登録') + '）'}
 
-🚨【最重要：今日(${nowJst})が放送日 / 最新話に焦点を合わせる】🚨
-このcronは放送日当日に動いている。**ホームページに加えてサブページ（/story/, /news/, /intro/, /next/, /onair/ 等）の情報を必ず横断的に読み取り、第N話・サブタイトル・あらすじ・ゲスト出演者を抽出**してください。
-- サブページに「第◯話」「story01」「news07」など番号が見える場合、その**最大番号が今夜放送回**である可能性が極めて高い
+🚨【最重要：今日(${todayLabel})が放送日 / 最新話に焦点を合わせる】🚨
+このcronは放送日当日に動いている。**ホームページに加えてサブページ（/story/, /news/, /intro/, /next/, /onair/ 等）、JSONデータ（data/news.json, data/story.json, data/next.json 等）、Google検索補完情報を必ず横断的に読み取り、第N話・サブタイトル・あらすじ・ゲスト出演者を抽出**してください。
+- 「話数ヒント」に第N話が示されている場合、その番号を**必ず**投稿文に反映すること
+- JSONデータ内の「text」「trailer_text」「subtitle」「title」「episode」「oa_date」などのフィールドに本文情報が入っている可能性が極めて高い
 - 「次回予告」「あらすじ」「ゲスト」「サブタイトル」「story」「episode」「news」セクションの情報を最優先で投稿に反映
-- 例: 「今夜の第3話、〇〇がついに△△する展開ヤバい」「今夜のゲストは□□さん！」「次回予告で見せた◯◯のシーンが気になりすぎる」
+- 例: 「今夜の第${episodeNumber !== null ? episodeNumber : 'N'}話、〇〇がついに△△する展開ヤバい」「今夜のゲストは□□さん！」「次回予告で見せた◯◯のシーンが気になりすぎる」
 - 第1話（初回放送）の場合は「ついに今夜スタート」の文脈で
 - 最終回付近なら「最終話/最終章」の特別感を強調
 - 取得情報を**3回以上熟読**した上で、第N話情報が**本当に1ミリも書かれていない場合のみ**ドラマ全体の見どころに切り替える（安易にフォールバックしない）
@@ -317,6 +517,10 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
       drama: drama.title,
       official_fetch: officialContent ? 'ok' : `failed: ${officialFetchError || 'no url'}`,
       subpages_fetched: subpagesFetched,
+      json_endpoints_fetched: jsonEndpointsFetched,
+      episode_number: episodeNumber,
+      content_density: contentDensity,
+      grounding_used: groundingNote.length > 0,
     });
     } catch (innerErr: any) {
       // 処理途中で失敗したらキューを failed にマーク
