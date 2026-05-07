@@ -4,7 +4,16 @@ import { NextResponse } from 'next/server';
 import Parser from 'rss-parser';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60; 
+export const maxDuration = 60;
+
+type SourceDef = {
+  name: string;
+  url: string;
+  type: string;
+  // true なら URL を fetch せず Gemini Grounding でキーワードをリサーチして
+  // その結果を contentText として本投稿生成に渡す
+  isResearch?: boolean;
+};
 
 export async function GET(req: Request) {
   const authHeader = req.headers.get('authorization');
@@ -24,11 +33,12 @@ export async function GET(req: Request) {
     const parser = new Parser();
 
     // 🌟 日本時間の「時」と「分」を取得
-    const jstDate = new Date(new Date().toLocaleString("ja-JP", {timeZone: "Asia/Tokyo"}));
+    const jstDate = new Date(new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" }));
     const currentHour = jstDate.getHours();
-    const currentMinute = jstDate.getMinutes(); // 🌟追加：30分シフト用
+    const currentMinute = jstDate.getMinutes();
+    const todayLabel = `${jstDate.getFullYear()}年${jstDate.getMonth() + 1}月${jstDate.getDate()}日`;
 
-    // 🌟 共通ボット対策ヘッダー（一般のMacのChromeのフリをしてアクセス）
+    // 🌟 共通ボット対策ヘッダー
     const fetchHeaders = {
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -36,129 +46,189 @@ export async function GET(req: Request) {
       "Cache-Control": "no-cache"
     };
 
-    const dailySources = [
-      { name: "Gガイド番組表", url: "https://bangumi.org/epg/td?ggm_group_id=42", type: "scraping_tv" }
+    // 🌟 15分tickごとにカテゴリを固定して順送り巡回
+    // tick 0 (00-14分): TV系
+    // tick 1 (15-29分): トレンド系（リサーチワークフロー）
+    // tick 2 (30-44分): エンタメニュース1
+    // tick 3 (45-59分): エンタメニュース2
+    const SCHEDULE: SourceDef[][] = [
+      [
+        { name: "価格.com テレビ紹介", url: "https://kakaku.com/tv/", type: "scraping_kakaku" },
+        { name: "TVでた蔵", url: "https://datazoo.jp/", type: "scraping_datazoo" },
+      ],
+      [
+        { name: "Yahoo!リアルタイム", url: "https://search.yahoo.co.jp/realtime", type: "scraping_yahoo_rt", isResearch: true },
+        { name: "Googleトレンド", url: "https://trends.google.co.jp/trending/rss?geo=JP", type: "rss", isResearch: true },
+        { name: "Xトレンド", url: "https://twittrend.jp/", type: "scraping_x", isResearch: true },
+      ],
+      [
+        { name: "コミックナタリー", url: "https://natalie.mu/comic/feed/news", type: "rss" },
+        { name: "音楽ナタリー", url: "https://natalie.mu/music/feed/news", type: "rss" },
+        { name: "シネマトゥデイ", url: "https://www.cinematoday.jp/index.xml", type: "rss" },
+        { name: "モデルプレス", url: "https://feed.mdpr.jp/rss/export/mdpr-entertainment.xml", type: "rss" },
+      ],
+      [
+        { name: "Yahoo!エンタメ", url: "https://news.yahoo.co.jp/rss/topics/entertainment.xml", type: "rss" },
+        { name: "Yahoo!IT", url: "https://news.yahoo.co.jp/rss/topics/it.xml", type: "rss" },
+        { name: "PR TIMES", url: "https://prtimes.jp/index.rdf", type: "rss" },
+        { name: "ねとらぼ", url: "https://rss.itmedia.co.jp/rss/2.0/nlab.xml", type: "rss" },
+      ],
     ];
 
-    const tvSources = [
-      { name: "価格.com テレビ紹介", url: "https://kakaku.com/tv/", type: "scraping_kakaku" },
-      { name: "TVでた蔵", url: "https://datazoo.jp/", type: "scraping_datazoo" },
-      { name: "Yahoo!リアルタイム", url: "https://search.yahoo.co.jp/realtime", type: "scraping_yahoo_rt" }
-    ];
-
-    const hourlySources = [
-      { name: "Googleトレンド", url: "https://trends.google.co.jp/trending/rss?geo=JP", type: "rss" },
-      { name: "Yahoo!エンタメ", url: "https://news.yahoo.co.jp/rss/topics/entertainment.xml", type: "rss" },
-      { name: "Yahoo!IT", url: "https://news.yahoo.co.jp/rss/topics/it.xml", type: "rss" },
-      { name: "PR TIMES", url: "https://prtimes.jp/index.rdf", type: "rss" },
-      { name: "Xトレンド", url: "https://twittrend.jp/", type: "scraping_x" }
-    ];
-
-    let targetSources: any[] = [];
-
-    // 🌟 00分/30分の「完全交互シフト」ロジック
-    if (currentMinute < 30) {
-      // ⏱️ 00分〜29分：テレビ・特急レーン
-      if (currentHour === 7) {
-        targetSources.push(dailySources[0]); // 朝7時00分のみGガイド
-      } else {
-        targetSources.push(tvSources[currentHour % tvSources.length]);
-      }
+    const tick = Math.floor(currentMinute / 15); // 0..3
+    let source: SourceDef;
+    if (currentHour === 7 && tick === 0) {
+      // 朝7時00分台のみ Gガイド を特例で巡回
+      source = { name: "Gガイド番組表", url: "https://bangumi.org/epg/td?ggm_group_id=42", type: "scraping_tv" };
     } else {
-      // ⏱️ 30分〜59分：通常レーン
-      targetSources.push(hourlySources[currentHour % hourlySources.length]);
+      const lane = SCHEDULE[tick];
+      source = lane[currentHour % lane.length];
     }
 
     let addedCount = 0;
-    const MAX_PROCESS = 1; 
+    const MAX_PROCESS = 1;
 
-    for (const source of targetSources) {
+    console.log(`パトロール開始: ${source.name} (tick=${tick}, hour=${currentHour})`);
+
+    let items: { title: string; url: string; keyword?: string }[] = [];
+    try {
+      if (source.type === "rss") {
+        const feed = await parser.parseURL(source.url);
+        items = feed.items.slice(0, 10).map((i: any) => ({
+          title: source.isResearch ? `${source.name}: ${i.title}` : (i.title || ''),
+          url: i.link || '',
+          keyword: source.isResearch ? (i.title || '') : undefined,
+        }));
+      } else if (source.type === "scraping_x") {
+        const res = await fetch(source.url, { headers: fetchHeaders });
+        const html = await res.text();
+        const matches = html.match(/class="td_list">([\s\S]*?)<\/div>/g) || [];
+        items = matches.slice(0, 10).map(m => {
+          const kw = m.replace(/<[^>]*>/g, '').trim();
+          return {
+            title: `Xトレンド: ${kw}`,
+            url: `https://x.com/search?q=${encodeURIComponent(kw)}`,
+            keyword: kw,
+          };
+        });
+      } else if (source.type === "scraping_tv") {
+        const res = await fetch(source.url, { headers: fetchHeaders });
+        const html = await res.text();
+        const programMatches = html.match(/\/epg\/show\/(\w+)/g) || [];
+        const uniqueLinks = Array.from(new Set(programMatches)).slice(0, 10);
+        items = uniqueLinks.map(link => ({ title: "テレビ番組特集", url: `https://bangumi.org${link}` }));
+      } else if (source.type === "scraping_kakaku") {
+        const res = await fetch(source.url, { headers: fetchHeaders });
+        const arrayBuffer = await res.arrayBuffer();
+        const decoder = new TextDecoder('shift-jis');
+        const html = decoder.decode(arrayBuffer);
+        const matches = html.match(/<a href="\/tv\/[^>]+>([^<]+)<\/a>/g) || [];
+        const validMatches = matches.filter(m => !m.includes('詳細') && !m.includes('画像')).slice(0, 10);
+        items = validMatches.map(m => {
+          const titleMatch = m.match(/>([^<]+)</);
+          return { title: `📺 TV紹介: ${titleMatch ? titleMatch[1].trim() : '注目商品'}`, url: source.url };
+        });
+      } else if (source.type === "scraping_datazoo") {
+        const res = await fetch(source.url, { headers: fetchHeaders });
+        const html = await res.text();
+        const rawMatches = html.match(/<a[^>]*>([\s\S]*?)<\/a>/g) || [];
+        const validMatches = rawMatches
+          .map(m => m.replace(/<[^>]+>/g, '').replace(/&[a-zA-Z0-9#]+;/g, ' ').replace(/\s+/g, ' ').trim())
+          .filter(text => text.length >= 12 && text.length <= 60 && !text.includes('ログイン') && !text.includes('番組表') && !text.includes('でた蔵') && !text.includes('プライバシー') && !text.includes('ページトップ') && !text.includes('企業様') && !text.includes('トライアル') && !text.includes('利用規約') && !text.includes('お問い合わせ') && !text.includes('ご利用') && !text.includes('■'))
+          .slice(0, 10);
+        items = validMatches.map(text => ({ title: `📺 でた蔵: ${text}`, url: source.url }));
+      } else if (source.type === "scraping_yahoo_rt") {
+        const res = await fetch(source.url, { headers: fetchHeaders });
+        const html = await res.text();
+        const rawMatches = html.match(/href="\/realtime\/search\?p=([^"&]+)/g) || [];
+        const uniqueKeywords = Array.from(new Set(rawMatches.map(m => decodeURIComponent(m.replace('href="/realtime/search?p=', '')))));
+        items = uniqueKeywords.slice(0, 10).map(kw => ({
+          title: `🔍 Yahooリアルタイム: ${kw}`,
+          url: `https://search.yahoo.co.jp/realtime/search?p=${encodeURIComponent(kw)}`,
+          keyword: kw,
+        }));
+      }
+    } catch (e) {
+      console.error(`${source.name} 取得失敗`, e);
+      return NextResponse.json({ success: false, error: `${source.name} 取得失敗: ${(e as any)?.message}` });
+    }
+
+    // 🌟 重複判定: original_url完全一致 OR タイトル前方類似 AND 6時間以内 でスキップ
+    // （以前は24h窓だったが「同じカード3連戦」「連日のトレンド」を取りこぼしていた）
+    const dedupWindow = 6 * 60 * 60 * 1000; // 6時間
+    let processedItem: any = null;
+    for (const item of items) {
       if (addedCount >= MAX_PROCESS) break;
-      console.log(`パトロール開始: ${source.name}`);
+      const url = item.url || "";
+      const title = item.title || "";
 
-      let items = [];
+      const superCleanTitle = title.replace(/[^぀-ゟ゠-ヿ一-鿿0-9a-zA-Z]/g, '').substring(0, 10);
+      const { data: existing } = await supabase.from('posts').select('id').eq('original_url', url).single();
+      const { data: similar } = await supabase
+        .from('posts')
+        .select('id')
+        .ilike('title', `%${superCleanTitle}%`)
+        .gte('created_at', new Date(Date.now() - dedupWindow).toISOString());
+
+      if (existing || (similar && similar.length > 0)) {
+        console.log(`重複スキップ: ${title}`);
+        continue;
+      }
+
+      processedItem = item;
+      break;
+    }
+
+    if (!processedItem) {
+      return NextResponse.json({ success: true, message: '新規ネタなし（全件重複）', source: source.name });
+    }
+
+    const url = processedItem.url || "";
+    const title = processedItem.title || "";
+    const keyword = processedItem.keyword;
+
+    // 🌟 contentText の取得：リサーチ系は Gemini Grounding でキーワードを調査、
+    // それ以外は URL を fetch して HTML→テキスト整形
+    let contentText = "";
+    if (source.isResearch && keyword) {
       try {
-        // 🌟 すべて「slice(0, 10)」に変更して10件深掘り！
-        if (source.type === "rss") {
-          const feed = await parser.parseURL(source.url);
-          items = feed.items.slice(0, 10).map(i => ({ title: i.title, url: i.link }));
-        } else if (source.type === "scraping_x") {
-          const res = await fetch(source.url, { headers: fetchHeaders });
-          const html = await res.text();
-          const matches = html.match(/class="td_list">([\s\S]*?)<\/div>/g) || [];
-          items = matches.slice(0, 10).map(m => ({
-            title: `Xトレンド: ${m.replace(/<[^>]*>/g, '').trim()}`,
-            url: `https://x.com/search?q=${encodeURIComponent(m.replace(/<[^>]*>/g, '').trim())}`
-          }));
-        } else if (source.type === "scraping_tv") {
-          const res = await fetch(source.url, { headers: fetchHeaders });
-          const html = await res.text();
-          const programMatches = html.match(/\/epg\/show\/(\w+)/g) || [];
-          const uniqueLinks = Array.from(new Set(programMatches)).slice(0, 10);
-          items = uniqueLinks.map(link => ({ title: "テレビ番組特集", url: `https://bangumi.org${link}` }));
-        } else if (source.type === "scraping_kakaku") {
-          const res = await fetch(source.url, { headers: fetchHeaders });
-          const arrayBuffer = await res.arrayBuffer();
-          const decoder = new TextDecoder('shift-jis');
-          const html = decoder.decode(arrayBuffer);
-          const matches = html.match(/<a href="\/tv\/[^>]+>([^<]+)<\/a>/g) || [];
-          const validMatches = matches.filter(m => !m.includes('詳細') && !m.includes('画像')).slice(0, 10);
-          items = validMatches.map(m => {
-            const titleMatch = m.match(/>([^<]+)</);
-            return { title: `📺 TV紹介: ${titleMatch ? titleMatch[1].trim() : '注目商品'}`, url: source.url };
-          });
-        } else if (source.type === "scraping_datazoo") {
-          const res = await fetch(source.url, { headers: fetchHeaders });
-          const html = await res.text();
-          const rawMatches = html.match(/<a[^>]*>([\s\S]*?)<\/a>/g) || [];
-          const validMatches = rawMatches
-            .map(m => m.replace(/<[^>]+>/g, '').replace(/&[a-zA-Z0-9#]+;/g, ' ').replace(/\s+/g, ' ').trim())
-            .filter(text => text.length >= 12 && text.length <= 60 && !text.includes('ログイン') && !text.includes('番組表') && !text.includes('でた蔵') && !text.includes('プライバシー') && !text.includes('ページトップ') && !text.includes('企業様') && !text.includes('トライアル') && !text.includes('利用規約') && !text.includes('お問い合わせ') && !text.includes('ご利用') && !text.includes('■'))
-            .slice(0, 10);
-          items = validMatches.map(text => ({ title: `📺 でた蔵: ${text}`, url: source.url }));
-        } else if (source.type === "scraping_yahoo_rt") {
-          // 🌟【新設】Yahoo!リアルタイム検索（トレンドワードのスクレイピング）
-          const res = await fetch(source.url, { headers: fetchHeaders });
-          const html = await res.text();
-          // トレンドワードのリンクを抽出
-          const rawMatches = html.match(/href="\/realtime\/search\?p=([^"&]+)/g) || [];
-          // 重複を削除してURLエンコードを戻す
-          const uniqueKeywords = Array.from(new Set(rawMatches.map(m => decodeURIComponent(m.replace('href="/realtime/search?p=', '')))));
-          items = uniqueKeywords.slice(0, 10).map(kw => ({
-            title: `🔍 Yahooリアルタイム: ${kw}`,
-            url: `https://search.yahoo.co.jp/realtime/search?p=${encodeURIComponent(kw)}`
-          }));
-        }
-      } catch (e) { console.error(`${source.name} 取得失敗`, e); continue; }
+        const groundingModel = genAI.getGenerativeModel({
+          model: 'gemini-2.5-flash',
+          tools: [{ google_search: {} } as any],
+        });
+        const researchPrompt = `今日 ${todayLabel} に日本のSNS／検索トレンドで「${keyword}」が話題になっています。Google検索でこのキーワードがなぜ今話題なのか、関連する人物・商品・コンテキスト・最新ニュースを調べて、500〜1000字で日本語要約してください。
+- いつから話題か（昨日／今日／今週など）
+- 何が起こっているか（事件、発売、出演、発表、放送、ライブ、新作リリース等を具体的に）
+- 関連する人名／商品名／番組名／作品名／固有名詞
+- アフィリエイト的に注目すべき要素（テレビ出演、新作、ライブ、イベント、書籍、サントラ、ドラマ／映画化、配信開始等）
 
-      // 🌟 【10件深掘りロジック】上から順に見て、保存済みのものはスキップ。「新しい1件」を見つけたら処理して即終了！
-      for (const item of items) {
-        if (addedCount >= MAX_PROCESS) break;
-        const url = item.url || "";
-        const title = item.title || "";
+検索しても明確な話題が見つからない場合は冒頭に「【話題の特定不可】」と書いてください。捏造禁止、検索結果のみ参照。`;
+        const gRes = await groundingModel.generateContent(researchPrompt);
+        contentText = gRes.response.text().trim().substring(0, 4000);
+        console.log(`リサーチ完了: ${keyword} (${contentText.length}字)`);
+      } catch (e: any) {
+        console.error('Groundingリサーチ失敗', e);
+        contentText = `【リサーチ失敗】キーワード「${keyword}」のリサーチに失敗しました。理由: ${e?.message || 'unknown'}`;
+      }
+    } else {
+      try {
+        const pageRes = await fetch(url, { headers: fetchHeaders });
+        const html = await pageRes.text();
+        contentText = html
+          .replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gmi, "")
+          .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gmi, "")
+          .replace(/<[^>]*>?/gm, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .substring(0, 3000);
+      } catch (e) {
+        contentText = "詳細取得失敗";
+      }
+    }
 
-        const superCleanTitle = title.replace(/[^\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF0-9a-zA-Z]/g, '').substring(0, 10);
-        const { data: existing } = await supabase.from('posts').select('id').eq('original_url', url).single();
-        const { data: similar } = await supabase.from('posts').select('id').ilike('title', `%${superCleanTitle}%`).gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
-        
-        // すでに保存済みなら次のアイテムへ進む（continue）
-        if (existing || (similar && similar.length > 0)) {
-          console.log(`重複スキップ: ${title}`);
-          continue; 
-        }
+    const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
 
-        // 新しいネタを見つけた場合のみ、ここから下のAI処理に進む
-        let contentText = "";
-        try {
-          // 🌟 ここにもボット対策ヘッダーを付与
-          const pageRes = await fetch(url, { headers: fetchHeaders });
-          const html = await pageRes.text();
-          contentText = html.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gmi, "").replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gmi, "").replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim().substring(0, 3000);
-        } catch (e) { contentText = "詳細取得失敗"; }
-
-        const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-        
-        const prompt = `
+    const prompt = `
 あなたはX（旧Twitter）で月100万円以上を稼ぐプロのアフィリエイター、兼SNSアルゴリズム解析者です。
 以下の情報を分析し、JSONで出力してください。
 
@@ -168,6 +238,7 @@ export async function GET(req: Request) {
 1. 企業向けのプレスリリース（BtoB商材、販売代理店募集、業務提携、決算発表など）
 2. マーケティング調査・アンケートレポート（「〇〇市場が拡大」「中国SNSで人気」などの業界向けニュース）
 3. NPO法人の活動、政治・経済の硬すぎるニュース、事件・事故・災害のネガティブなニュース
+4. リサーチ結果が「【話題の特定不可】」または「【リサーチ失敗】」で始まる場合（情報不足のため）
 
 🚨【STEP1：収益化判定（最重要の絶対ルール）】🚨
 まず、このニュースでアフィリエイトを行うかどうかの「判定」を厳格に行ってください。
@@ -200,63 +271,17 @@ export async function GET(req: Request) {
 後述の【型】は完全に無視してください。アフィリリンク、[ad]、PRなどの広告要素は【絶対に使用禁止】です。tweet_1 〜 tweet_3 のすべてを、リンクを含まない「純粋な感想」や「フォロワーへの問いかけ」にしてください。
 
 【🌟超実戦的！クリックが取れる投稿の型（収益化用のみ）】
+[フック - 改行 - 商品紹介 - リンク - 補足 - 感想]
 
-🚨【絶対ルール：改行と空白行の完全再現】🚨
-以下に提示している【型1〜型4】の「改行」と「空白行（1行空け）」のレイアウトは絶対に崩さずそのまま再現してください。文章を詰めて書くのは厳禁です。※改行は「\\n」、空白行は「\\n\\n」で出力。
+【現在の元タイトル】${title}
+${keyword ? `【元キーワード（トレンド）】${keyword}\n` : ''}
+【取得情報（${source.isResearch ? 'Google検索リサーチ結果' : 'ページ抽出テキスト'}）】
+${contentText}
 
-🚨【広告タグの使い分け】🚨
-・Amazon案件：末尾に「[ad]」
-・楽天案件：先頭に「PR」
-・その他(VOD等)：末尾に「[ad]」
-
-型1【トレンド便乗型】（※楽天案件なら先頭にPR）
-(話題のニュースの要約)🏭
-
-そんなこと聞くと(食べたくなる/行きたくなる)よね😅
-
-楽天(またはAmazon)覗いて見たら、(関連商品)なんてのあるんだね⬇️
-[アフィリリンク]
-
-これは知らなかったし、(ジャンル)好きとしては気になる😆
-
-型2【スポーツ・イベント配信型】
-ヤバい‼️もう(試合/配信)始まってる💦
-
-(チーム名や番組名)
-テレビ放送なし❌
-
-ここでLIVE配信観れます👇
-[アフィリリンク]
-※(無料期間など)無料🆓
-
-(注目の選手や見どころ)
-
-型3【品薄・再販パトロール型】
-(商品名)
-
-売り切れ＆高騰だらけ💦
-
-Amazonは在庫復活この前あったからチェック毎日してる⬇️
-[アフィリリンク]
-
-(付録や特典の魅力)欲しいなぁ🥕
-
-(関連グッズ)も良いよね
-
-型4【招待販売・予約開始型】
-(商品名)
-
-Amazonで招待販売（または予約）始まってます⬇️
-[アフィリリンク]
-
-Amazonの他の出品者をクリック➡️(定価など)円のやつがAmazonの販売
-※本日時点の価格
-
-現在時刻:${now}
-【内容】\n${contentText}
-【運用者からの補足】情報源: ${source?.name || '手動入力'} / タイトル: ${title || 'なし'}
+現在時刻: ${now}（日本時間）
 
 必ず以下のJSON形式のみで出力してください。ツイート案の中の改行は必ず「\\n」を使って表現してください。
+🚨【出力ルール】出力は純粋なJSONオブジェクト1個だけ。前置き、後書き、\`\`\`json などのマークダウン装飾、引用元の脚注、説明文は一切含めないこと。
 {
   "is_safe": boolean,
   "title": "タイトル",
@@ -275,22 +300,46 @@ Amazonの他の出品者をクリック➡️(定価など)円のやつがAmazon
 }
 `;
 
-        const result = await model.generateContent(prompt);
-        const responseText = await result.response.text();
-        const jsonStart = responseText.indexOf('{');
-        const jsonEnd = responseText.lastIndexOf('}') + 1;
-        const data = JSON.parse(responseText.substring(jsonStart, jsonEnd));
+    const result = await model.generateContent(prompt);
+    const responseText = await result.response.text();
+    const jsonStart = responseText.indexOf('{');
+    const jsonEnd = responseText.lastIndexOf('}') + 1;
+    const data = JSON.parse(responseText.substring(jsonStart, jsonEnd));
 
-        if (data.is_safe === false) { console.log(`🚨 スキップ: ${data.title}`); continue; }
-
-        await supabase.from('posts').insert([{
-          title: data.title, category: data.category, purpose: data.purpose, time_status: data.time_status, source_summary: data.source_summary, why_now: data.why_now, recommended_action: data.recommended_action, affiliate_candidates: data.affiliate_candidates, post_angles: data.post_angles, tweet_1: data.tweet_1, tweet_2: data.tweet_2, tweet_3: data.tweet_3, cautions: data.cautions, original_url: url
-        }]);
-        
-        addedCount++;
-      }
+    if (!data.is_safe) {
+      console.log(`is_safe=false でスキップ: ${title}`);
+      return NextResponse.json({ success: true, message: 'is_safe=falseでスキップ', source: source.name, title });
     }
-    return NextResponse.json({ success: true, count: addedCount });
+
+    const insertData = {
+      title: data.title,
+      category: data.category,
+      purpose: data.purpose,
+      time_status: data.time_status,
+      source_summary: data.source_summary,
+      why_now: data.why_now,
+      recommended_action: data.recommended_action,
+      affiliate_candidates: data.affiliate_candidates,
+      post_angles: data.post_angles,
+      tweet_1: data.tweet_1,
+      tweet_2: data.tweet_2,
+      tweet_3: data.tweet_3,
+      cautions: data.cautions,
+      original_url: url,
+    };
+
+    const { error: insertError } = await supabase.from('posts').insert([insertData]);
+    if (insertError) throw insertError;
+
+    addedCount++;
+    return NextResponse.json({
+      success: true,
+      source: source.name,
+      tick,
+      added: addedCount,
+      title: data.title,
+      research_used: source.isResearch === true,
+    });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
