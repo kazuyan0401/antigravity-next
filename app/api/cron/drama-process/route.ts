@@ -420,14 +420,18 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
 
 🚨【絶対ルール】🚨
 1. tweet_1 / tweet_2 / tweet_3 の役割を厳格に分けること（後述）
-2. **ドラマ名は正式タイトル「${drama.title}」のみ**を使うこと。tweet本文内でドラマ名を引用・参照する時、放送時間・放送局・キャッチコピー等を絶対に含めない。
+2. **ドラマ名は正式タイトル「${drama.title}」のみ**を使うこと。tweet本文内でドラマ名を引用・参照する時、放送時間・放送局・キャッチコピー・出演者名・煽り文句等を**絶対に**含めない。
    - ⭕️ 良い例: 「${drama.title}」が今夜23:59に放送スタート！
-   - ❌ 悪い例: 「【木曜23:59放送】${drama.title}（〇〇テレビ）を深掘り！衝撃の人間ドラマを見逃すな！」が今夜放送…（後述の title フィールドの全文をそのまま「」で括ってツイートに引用するのは厳禁）
-   - 後述する title フィールドは**運用者が一覧で見る管理用見出し**。tweet_1/tweet_2/tweet_3 の本文に埋め込んではならない。
-3. 放送時間（${airLabel}）にも触れること（「今夜21時から」「毎朝8時から」等の自然な表現で）
-4. 改行は「\\n」、空白行（1行空け）は「\\n\\n」で出力。空白行を必ず使うこと
-5. tweet_2/tweet_3 のアフィリエイトリンク部分は必ず文字列「[アフィリリンク]」をそのまま埋め込む（実URLは絶対に書かない）
-6. Amazon案件は末尾に「[ad]」、楽天案件は先頭に「PR」を付与
+   - ❌ 悪い例1: 「【木曜23:59放送】${drama.title}（〇〇テレビ）を深掘り！」が今夜放送
+   - ❌ 悪い例2: 「【帯ドラマ放送中】${drama.title}（NHK総合）で〇〇が主演！」話題のNHK夜ドラ…
+   - ❌ 悪い例3: 「【放送中】${drama.title}」（タイトル前後に【】や（）等の装飾を勝手に付与しない）
+   - 後述する title フィールドは**運用者が一覧で見る管理用見出し**。tweet_1/tweet_2/tweet_3 の本文に **冒頭・中間・末尾どこにも** コピーしないこと。
+3. 各tweetは**独立した本文**として書く。tweet先頭に「【...】〜」のような見出し風プレフィックスを付けるのは禁止（運用者が後から手作業で付ける）
+4. 放送時間（${airLabel}）にも触れること（「今夜21時から」「毎朝8時から」等の自然な表現で）
+5. 改行は「\\n」、空白行（1行空け）は「\\n\\n」で出力。空白行を必ず使うこと
+6. tweet_2/tweet_3 のアフィリエイトリンク部分は必ず文字列「[アフィリリンク]」をそのまま埋め込む（実URLは絶対に書かない）
+7. Amazon案件は末尾に「[ad]」、楽天案件は先頭に「PR」を付与
+8. 出力前の自己点検: 各tweetの本文に「【」「】」が含まれていたら、それは管理用見出しの混入なので削除して書き直すこと（ドラマ正式名内に元々含まれる場合のみ例外）
 
 🚨【tweet_1 = アカウント強化用】🚨
 リンク・[ad]・PR・アフィ要素を一切含まない、純粋な期待感・感想・問いかけ投稿。
@@ -453,7 +457,12 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
 - 主題歌情報が皆無な場合は、tweet_3 もリンクなしで「主題歌誰なんだろう？気になる」等の交流型にフォールバック
 
 【その他のフィールド】
-- title: **管理画面の一覧で運用者が見る見出し**。「【\${放送時間}放送】${drama.title}（\${放送局}）」のように、ドラマ名（正式名「${drama.title}」のみ）と放送タイミングを目立たせる。**この見出し全文を tweet_1〜tweet_3 の本文中で「」で括って引用してはいけない**
+- title: **管理画面の一覧で運用者が見る見出し**（※tweet本文ではない。tweet_1〜tweet_3 の本文中に絶対にコピーしないこと）
+  - フォーマットは厳密に： **「【\${放送時間}放送】${drama.title}（\${放送局}）」** の3要素のみ
+  - **以下は絶対に追加しない**: 出演者名（「〇〇主演」「〇〇が出演」等）、煽り文句（「見逃すな」「深掘り」「衝撃の」等）、ジャンル形容（「衝撃の人間ドラマ」「話題の」等）、感嘆符
+  - ⭕️ OK例: 「【月-土 22:45放送】ミッドナイトタクシー（NHK総合）」
+  - ❌ NG例1: 「【帯ドラマ放送中】ミッドナイトタクシー（NHK総合）で古川琴音が主演！」← 「で〜主演！」が余計
+  - ❌ NG例2: 「【木曜23:59放送】君が死刑になる前に（読売テレビ・日本テレビ系）を深掘り！衝撃の人間ドラマを見逃すな！」← 「を深掘り！」以降が余計
 - category: 必ず「ドラマ」固定
 - purpose: 「収益特化」（tweet_2 か tweet_3 のいずれかでアフィしている場合）または「シャドウバン対策」（3つ全てリンクなしの場合）
 - time_status: 「今すぐ投稿向き」（放送日当日のため基本これ）
@@ -489,6 +498,44 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
     const jsonStart = responseText.indexOf('{');
     const jsonEnd = responseText.lastIndexOf('}') + 1;
     const data = JSON.parse(responseText.substring(jsonStart, jsonEnd));
+
+    // 生成titleが本来のフォーマット外の余計な煽り句を含んでいた場合のサニタイズ
+    // ドラマ名以降に「を深掘り」「で〇〇主演」「衝撃の」「見逃すな」等が付いていたら切り落とす
+    const sanitizeTitle = (raw: string): string => {
+      if (!raw) return raw;
+      let t = raw.trim();
+      // 「）」直後に続く煽り文をカット
+      const idx = t.indexOf('）');
+      if (idx > 0 && idx < t.length - 1) {
+        t = t.substring(0, idx + 1);
+      }
+      // 末尾の感嘆符・絵文字を削除
+      t = t.replace(/[！!♪🔥📺⚡️😭👇🆓😆🤔💦😱🚗💨🥰]+$/u, '').trim();
+      return t;
+    };
+    data.title = sanitizeTitle(data.title || '');
+
+    // tweet本文の冒頭に管理用見出し（titleフィールドや「【...】〜（...）」風プレフィックス）が
+    // コピーされていた場合に剥がす
+    const stripHeaderPrefix = (tweet: string, titleStr: string): string => {
+      if (!tweet) return tweet;
+      let t = tweet.trim();
+      // 1) titleフィールド全文がそのまま冒頭にあれば除去
+      if (titleStr && t.startsWith(titleStr)) {
+        t = t.substring(titleStr.length).trim();
+      }
+      // 2) 「【...】〜...（〇〇テレビ）...」のような管理用ヘッダ形式を冒頭から1つ除去
+      //    ドラマ名「${drama.title}」より長くて「【...】」を含むプレフィックスが先頭にある時のみ
+      const headerRe = /^[「『]?【[^】]{1,50}】[^「『\n]{1,80}（[^）\n]{1,30}）[^\n「『]{0,80}[」』]?[\s、。！!]*/u;
+      const m = t.match(headerRe);
+      if (m && m[0].length > drama.title.length + 5 && m[0].length < t.length) {
+        t = t.substring(m[0].length).trim();
+      }
+      return t;
+    };
+    data.tweet_1 = stripHeaderPrefix(data.tweet_1 || '', data.title);
+    data.tweet_2 = stripHeaderPrefix(data.tweet_2 || '', data.title);
+    data.tweet_3 = stripHeaderPrefix(data.tweet_3 || '', data.title);
 
     // postsテーブルに保存
     const postUrl = drama.official_url || `https://www.crank-in.net/drama/${drama.season || ''}`;
