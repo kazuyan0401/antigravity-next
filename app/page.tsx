@@ -36,6 +36,8 @@ export default function Home() {
   const [bulkInput, setBulkInput] = useState('');
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [bulkResults, setBulkResults] = useState<any[] | null>(null);
+  const [bulkSuccessPairs, setBulkSuccessPairs] = useState<{ email: string; password: string }[]>([]);
+  const [bulkCopied, setBulkCopied] = useState(false);
   // 🌟 ドラマ管理機能用のステート
   const [isDramaManagement, setIsDramaManagement] = useState(false);
   const [dramas, setDramas] = useState<any[]>([]);
@@ -120,15 +122,65 @@ export default function Home() {
     }
   };
 
+  // 紛らわしい文字 (0/O/o/1/l/I) を除いた8桁のランダムPW
+  const generatePassword = () => {
+    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    const arr = new Uint32Array(8);
+    crypto.getRandomValues(arr);
+    return Array.from(arr, n => chars[n % chars.length]).join('');
+  };
+
+  // えいじに渡すメール本文テンプレを成功ペアから生成
+  const generateBulkMailText = (pairs: { email: string; password: string }[]) => {
+    const loginUrl = 'https://antigravity-next.vercel.app/login';
+    return pairs.map(p => `${p.email} 様
+
+ご購入ありがとうございます。
+えいじ新聞ネクストのログイン情報をお送りします。
+
+▼ ログインURL
+${loginUrl}
+
+▼ メールアドレス
+${p.email}
+
+▼ パスワード
+${p.password}
+
+ログイン後、画面右上の「PW変更」からお好みのパスワードに変更できます。
+`).join('\n──────────\n\n');
+  };
+
+  const handleCopyBulkText = async () => {
+    try {
+      await navigator.clipboard.writeText(generateBulkMailText(bulkSuccessPairs));
+      setBulkCopied(true);
+      setTimeout(() => setBulkCopied(false), 2000);
+    } catch (e) {
+      alert('コピーに失敗しました');
+    }
+  };
+
+  const handleLogout = async () => {
+    if (!supabase) return;
+    if (!confirm('ログアウトしますか？')) return;
+    await supabase.auth.signOut();
+    router.push('/login');
+  };
+
   const handleBulkCreate = async () => {
     if (!bulkInput.trim()) return;
     const lines = bulkInput.trim().split('\n').filter(l => l.trim());
+    // メアドのみ or "メアド,PW" の両方を受け付け、PW未指定なら自動生成
     const users = lines.map(line => {
-      const [email, password] = line.split(',').map(s => s.trim());
+      const parts = line.split(',').map(s => s.trim());
+      const email = parts[0];
+      const password = parts[1] && parts[1].length >= 6 ? parts[1] : generatePassword();
       return { email, password };
     });
     setUserMessage('一括登録中...');
     setBulkResults(null);
+    setBulkSuccessPairs([]);
     try {
       const res = await fetch('/api/admin/users', {
         method: 'POST',
@@ -139,6 +191,10 @@ export default function Home() {
       if (result.success) {
         setUserMessage(`${result.successCount}/${result.totalCount}件 登録完了`);
         setBulkResults(result.results);
+        const successEmails = new Set(
+          result.results.filter((r: any) => r.success).map((r: any) => r.email)
+        );
+        setBulkSuccessPairs(users.filter(u => successEmails.has(u.email)));
         setBulkInput('');
         fetchUsers();
       } else {
@@ -792,13 +848,22 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
                     onChange={(e) => setNewUserEmail(e.target.value)}
                     className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                   />
-                  <input
-                    type="text"
-                    placeholder="パスワード（6文字以上）"
-                    value={newUserPassword}
-                    onChange={(e) => setNewUserPassword(e.target.value)}
-                    className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="パスワード（6文字以上）"
+                      value={newUserPassword}
+                      onChange={(e) => setNewUserPassword(e.target.value)}
+                      className="flex-1 p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                    />
+                    <button
+                      onClick={() => setNewUserPassword(generatePassword())}
+                      className="px-3 py-2 text-xs font-bold bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 whitespace-nowrap"
+                      type="button"
+                    >
+                      自動生成
+                    </button>
+                  </div>
                   <button
                     onClick={handleCreateUser}
                     disabled={!newUserEmail || !newUserPassword || newUserPassword.length < 6}
@@ -811,9 +876,12 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
             ) : (
               <>
                 <h3 className="text-sm font-bold text-blue-600 mb-2">一括インポート</h3>
-                <p className="text-[11px] text-slate-400 mb-3">1行につき「メールアドレス,パスワード」の形式で入力してください</p>
+                <p className="text-[11px] text-slate-400 mb-3">
+                  メールアドレスを1行ずつ貼り付け。パスワードは自動生成されます。<br />
+                  特定のPWを指定したい行のみ「メアド,パスワード」形式で入力してください。
+                </p>
                 <textarea
-                  placeholder={"user1@example.com,password123\nuser2@example.com,password456\nuser3@example.com,password789"}
+                  placeholder={"user1@example.com\nuser2@example.com\nuser3@example.com,custom_password"}
                   value={bulkInput}
                   onChange={(e) => setBulkInput(e.target.value)}
                   className="w-full p-4 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm font-mono h-40 resize-y"
@@ -832,6 +900,28 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
                         {r.email}: {r.success ? '登録成功' : `失敗 - ${r.error}`}
                       </div>
                     ))}
+                  </div>
+                )}
+                {bulkSuccessPairs.length > 0 && (
+                  <div className="mt-6 p-4 bg-blue-50 rounded-2xl border border-blue-100">
+                    <div className="flex justify-between items-center mb-3">
+                      <h4 className="text-sm font-bold text-blue-800">
+                        えいじに渡すメール本文（{bulkSuccessPairs.length}名分）
+                      </h4>
+                      <button
+                        onClick={handleCopyBulkText}
+                        className="text-[11px] font-bold bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                        type="button"
+                      >
+                        {bulkCopied ? 'コピーしました ✓' : '全文コピー'}
+                      </button>
+                    </div>
+                    <pre className="text-[11px] text-slate-700 whitespace-pre-wrap font-mono bg-white p-3 rounded-lg border border-blue-200 max-h-64 overflow-y-auto leading-relaxed">
+                      {generateBulkMailText(bulkSuccessPairs)}
+                    </pre>
+                    <p className="text-[10px] text-slate-500 mt-2">
+                      ※ 「全文コピー」を押した内容をえいじに渡し、購入者へメール送信してもらってください。
+                    </p>
                   </div>
                 )}
               </>
@@ -914,16 +1004,20 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
       <div className="max-w-xl mx-auto min-h-screen bg-white shadow-sm border-x border-slate-100">
-        <header className="p-6 flex justify-between items-center border-b border-slate-100">
+        <header className="p-6 flex justify-between items-center border-b border-slate-100 gap-3 flex-wrap">
           <h1 className="text-xl font-black text-slate-800">えいじ新聞<span className="text-blue-600">ネクスト</span></h1>
-          {/* 🌟 管理者だけにボタンを表示 */}
-          {isAdminUser && (
-            <div className="flex gap-2 items-center">
-              <button onClick={() => { setIsDramaManagement(true); fetchDramas(dramaSeason); setDramaMessage(''); }} className="text-[11px] font-bold bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200">ドラマ管理</button>
-              <button onClick={() => { setIsUserManagement(true); fetchUsers(); }} className="text-[11px] font-bold bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200">ユーザー管理</button>
-              <button onClick={handleOpenAdmin} className="bg-white p-2 text-xl text-blue-600 hover:bg-blue-50 rounded-full transition-colors">⊕</button>
-            </div>
-          )}
+          <div className="flex gap-2 items-center flex-wrap">
+            <a href="/update-password" className="text-[11px] font-bold bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200">PW変更</a>
+            <button onClick={handleLogout} className="text-[11px] font-bold bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200">ログアウト</button>
+            {/* 🌟 管理者だけにボタンを表示 */}
+            {isAdminUser && (
+              <>
+                <button onClick={() => { setIsDramaManagement(true); fetchDramas(dramaSeason); setDramaMessage(''); }} className="text-[11px] font-bold bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200">ドラマ管理</button>
+                <button onClick={() => { setIsUserManagement(true); fetchUsers(); }} className="text-[11px] font-bold bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200">ユーザー管理</button>
+                <button onClick={handleOpenAdmin} className="bg-white p-2 text-xl text-blue-600 hover:bg-blue-50 rounded-full transition-colors">⊕</button>
+              </>
+            )}
+          </div>
         </header>
 
         {/* 🌟 タブ切り替えボタン（件数表示付き） */}

@@ -61,6 +61,12 @@ export default function UpdatePasswordPage() {
         </form>
 
         {message && <p className="mt-4 text-center text-sm font-bold text-blue-600">{message}</p>}
+
+        <div className="mt-6 text-center">
+          <a href="/" className="text-sm text-blue-600 hover:underline">
+            ← トップに戻る
+          </a>
+        </div>
       </div>
     </div>
   );
