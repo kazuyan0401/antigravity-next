@@ -34,10 +34,10 @@ export default function Home() {
   const [userManagementLoading, setUserManagementLoading] = useState(false);
   const [userMessage, setUserMessage] = useState('');
   const [bulkInput, setBulkInput] = useState('');
+  const [bulkInitialPassword, setBulkInitialPassword] = useState('');
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [bulkResults, setBulkResults] = useState<any[] | null>(null);
   const [bulkSuccessPairs, setBulkSuccessPairs] = useState<{ email: string; password: string }[]>([]);
-  const [bulkCopied, setBulkCopied] = useState(false);
   // 🌟 ドラマ管理機能用のステート
   const [isDramaManagement, setIsDramaManagement] = useState(false);
   const [dramas, setDramas] = useState<any[]>([]);
@@ -130,35 +130,22 @@ export default function Home() {
     return Array.from(arr, n => chars[n % chars.length]).join('');
   };
 
-  // えいじに渡すメール本文テンプレを成功ペアから生成
-  const generateBulkMailText = (pairs: { email: string; password: string }[]) => {
-    const loginUrl = 'https://antigravity-next.vercel.app/login';
-    return pairs.map(p => `${p.email} 様
-
-ご購入ありがとうございます。
-えいじ新聞ネクストのログイン情報をお送りします。
-
-▼ ログインURL
-${loginUrl}
-
-▼ メールアドレス
-${p.email}
-
-▼ パスワード
-${p.password}
-
-ログイン後、画面右上の「PW変更」からお好みのパスワードに変更できます。
-`).join('\n──────────\n\n');
-  };
-
-  const handleCopyBulkText = async () => {
-    try {
-      await navigator.clipboard.writeText(generateBulkMailText(bulkSuccessPairs));
-      setBulkCopied(true);
-      setTimeout(() => setBulkCopied(false), 2000);
-    } catch (e) {
-      alert('コピーに失敗しました');
-    }
+  // 登録結果(メアド,パスワード)をCSVファイルとしてダウンロード
+  const handleDownloadBulkCsv = () => {
+    if (bulkSuccessPairs.length === 0) return;
+    const header = 'email,password\n';
+    const rows = bulkSuccessPairs.map(p => `${p.email},${p.password}`).join('\n');
+    const csv = header + rows + '\n';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    a.href = url;
+    a.download = `eijinews-users-${ts}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const handleLogout = async () => {
@@ -171,11 +158,17 @@ ${p.password}
   const handleBulkCreate = async () => {
     if (!bulkInput.trim()) return;
     const lines = bulkInput.trim().split('\n').filter(l => l.trim());
-    // メアドのみ or "メアド,PW" の両方を受け付け、PW未指定なら自動生成
+    // 行ごとのPW優先度: ① "メアド,PW" 形式の個別PW > ② 統一初期PW欄 > ③ ランダム生成
+    const unified = bulkInitialPassword.trim();
     const users = lines.map(line => {
       const parts = line.split(',').map(s => s.trim());
       const email = parts[0];
-      const password = parts[1] && parts[1].length >= 6 ? parts[1] : generatePassword();
+      const password =
+        parts[1] && parts[1].length >= 6
+          ? parts[1]
+          : unified.length >= 6
+          ? unified
+          : generatePassword();
       return { email, password };
     });
     setUserMessage('一括登録中...');
@@ -877,9 +870,16 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
               <>
                 <h3 className="text-sm font-bold text-blue-600 mb-2">一括インポート</h3>
                 <p className="text-[11px] text-slate-400 mb-3">
-                  メールアドレスを1行ずつ貼り付け。パスワードは自動生成されます。<br />
-                  特定のPWを指定したい行のみ「メアド,パスワード」形式で入力してください。
+                  メールアドレスを1行ずつ貼り付け。下の「初期パスワード」欄に統一PWを入れると全員そのPWで登録できます（空欄ならランダム生成）。<br />
+                  特定の行だけ個別PWにしたい場合は「メアド,パスワード」形式で入力してください。
                 </p>
+                <input
+                  type="text"
+                  placeholder="初期パスワード（例: eijinews2026） / 空欄ならランダム生成"
+                  value={bulkInitialPassword}
+                  onChange={(e) => setBulkInitialPassword(e.target.value)}
+                  className="w-full p-3 mb-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                />
                 <textarea
                   placeholder={"user1@example.com\nuser2@example.com\nuser3@example.com,custom_password"}
                   value={bulkInput}
@@ -903,25 +903,22 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
                   </div>
                 )}
                 {bulkSuccessPairs.length > 0 && (
-                  <div className="mt-6 p-4 bg-blue-50 rounded-2xl border border-blue-100">
-                    <div className="flex justify-between items-center mb-3">
+                  <div className="mt-6 p-4 bg-blue-50 rounded-2xl border border-blue-100 flex items-center justify-between gap-3">
+                    <div>
                       <h4 className="text-sm font-bold text-blue-800">
-                        えいじに渡すメール本文（{bulkSuccessPairs.length}名分）
+                        登録完了データ（{bulkSuccessPairs.length}名分）
                       </h4>
-                      <button
-                        onClick={handleCopyBulkText}
-                        className="text-[11px] font-bold bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700 transition-colors"
-                        type="button"
-                      >
-                        {bulkCopied ? 'コピーしました ✓' : '全文コピー'}
-                      </button>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        メアド・PWの一覧をCSVで保存できます（バックアップ・確認用）。
+                      </p>
                     </div>
-                    <pre className="text-[11px] text-slate-700 whitespace-pre-wrap font-mono bg-white p-3 rounded-lg border border-blue-200 max-h-64 overflow-y-auto leading-relaxed">
-                      {generateBulkMailText(bulkSuccessPairs)}
-                    </pre>
-                    <p className="text-[10px] text-slate-500 mt-2">
-                      ※ 「全文コピー」を押した内容をえいじに渡し、購入者へメール送信してもらってください。
-                    </p>
+                    <button
+                      onClick={handleDownloadBulkCsv}
+                      className="text-[11px] font-bold bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap"
+                      type="button"
+                    >
+                      CSVダウンロード
+                    </button>
                   </div>
                 )}
               </>
