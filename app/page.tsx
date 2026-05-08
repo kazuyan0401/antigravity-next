@@ -915,7 +915,7 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
       <div className="max-w-xl mx-auto min-h-screen bg-white shadow-sm border-x border-slate-100">
         <header className="p-6 flex justify-between items-center border-b border-slate-100">
-          <h1 className="text-xl font-black text-slate-800">X-Affiliate<span className="text-blue-600">.next</span></h1>
+          <h1 className="text-xl font-black text-slate-800">えいじ新聞<span className="text-blue-600">ネクスト</span></h1>
           {/* 🌟 管理者だけにボタンを表示 */}
           {isAdminUser && (
             <div className="flex gap-2 items-center">
