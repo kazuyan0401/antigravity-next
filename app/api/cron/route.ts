@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
 import Parser from 'rss-parser';
+import { enforceTweetLengths } from '@/app/lib/tweet-shrink';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -335,8 +336,15 @@ export async function GET(req: Request) {
 ◆判定が「シャドウバン対策」の場合：
 後述の【型】は完全に無視してください。アフィリリンク、[ad]、PRなどの広告要素は【絶対に使用禁止】です。tweet_1 〜 tweet_3 のすべてを、リンクを含まない「純粋な感想」や「フォロワーへの問いかけ」にしてください。
 
+🚨【絶対ルール：文字数上限120文字（X規約厳守）】🚨
+tweet_1 / tweet_2 / tweet_3 の本文は **必ず合計120文字以内** に収めること。
+- カウント対象は実際に投稿される全文字（改行「\\n」も1文字、絵文字も1文字、「[アフィリリンク]」は9文字、「[ad]」は4文字、「PR」は2文字）
+- 121文字以上の出力は禁止。型に全部入れて超える場合は、枕詞や語尾、補足を削って字数優先で再構成すること
+- 出力前に必ず自分で文字数を数え、超えていたらより短い表現に作り直してから出力
+
 【🌟超実戦的！クリックが取れる投稿の型（収益化用のみ）】
 [フック - 改行 - 商品紹介 - リンク - 補足 - 感想]
+※120文字制限が最優先なので、超える場合は型のセクションを省略してでも字数を守ること。
 
 【現在の元タイトル】${title}
 ${keyword ? `【元キーワード（トレンド）】${keyword}\n` : ''}
@@ -358,9 +366,9 @@ ${contentText}
   "recommended_action": "戦略（シャドウバン対策の場合はその旨を記載）",
   "affiliate_candidates": "具体的な案件名（シャドウバン対策の場合は「なし」）",
   "post_angles": "切り口",
-  "tweet_1": "投稿案1（収益化なら型を使用。シャドウバン対策ならリンク・タグなしの純粋なつぶやき）",
-  "tweet_2": "投稿案2（収益化なら型を使用。シャドウバン対策ならリンク・タグなしの純粋なつぶやき）",
-  "tweet_3": "投稿案3（完全な交流・問いかけ用。リンク・タグなし）",
+  "tweet_1": "投稿案1（必ず120文字以内。収益化なら型を使用。シャドウバン対策ならリンク・タグなしの純粋なつぶやき）",
+  "tweet_2": "投稿案2（必ず120文字以内。収益化なら型を使用。シャドウバン対策ならリンク・タグなしの純粋なつぶやき）",
+  "tweet_3": "投稿案3（必ず120文字以内。完全な交流・問いかけ用。リンク・タグなし）",
   "cautions": "注意点"
 }
 `;
@@ -376,6 +384,12 @@ ${contentText}
       return NextResponse.json({ success: true, message: 'is_safe=falseでスキップ', source: source.name, title });
     }
 
+    const enforced = await enforceTweetLengths(genAI, {
+      tweet_1: data.tweet_1,
+      tweet_2: data.tweet_2,
+      tweet_3: data.tweet_3,
+    });
+
     const insertData = {
       title: data.title,
       category: data.category,
@@ -386,9 +400,9 @@ ${contentText}
       recommended_action: data.recommended_action,
       affiliate_candidates: data.affiliate_candidates,
       post_angles: data.post_angles,
-      tweet_1: data.tweet_1,
-      tweet_2: data.tweet_2,
-      tweet_3: data.tweet_3,
+      tweet_1: enforced.tweet_1,
+      tweet_2: enforced.tweet_2,
+      tweet_3: enforced.tweet_3,
       cautions: data.cautions,
       original_url: url,
     };

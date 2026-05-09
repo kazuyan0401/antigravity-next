@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
 import { processDrama, DramaRecord } from '@/app/lib/drama-processor';
+import { enforceTweetLengths } from '@/app/lib/tweet-shrink';
 
 export const maxDuration = 300;
 
@@ -196,8 +197,16 @@ export async function POST(req: Request) {
 
 【🌟超実戦的！クリックが取れる投稿の型（収益化用のみ）】
 
+🚨【絶対ルール：文字数上限120文字（X規約厳守）】🚨
+tweet_1 / tweet_2 / tweet_3 の本文は **必ず合計120文字以内** に収めること。
+- カウント対象は実際に投稿される全文字（改行「\\n」も1文字、絵文字も1文字、「[アフィリリンク]」は9文字、「[ad]」は4文字、「PR」は2文字としてそのままカウント）
+- X側で実URLに置換されると t.co短縮で23文字相当になるため、120文字でもアフィリリンク込みで安全
+- **絶対NG**：121文字以上の出力（要約してでも必ず120以下に収める）。型の文言を全部入れたら超える場合は、語尾や枕詞を削って字数優先で詰めること
+- 出力前に必ず自分で文字数を数え、超えていたら「より短い表現」「短い絵文字1つ」「文の削除」で再構成してから出力する
+
 🚨【絶対ルール：改行と空白行の完全再現】🚨
 以下に提示している【型1〜型4】の「改行」と「空白行（1行空け）」のレイアウトは絶対に崩さずそのまま再現してください。文章を詰めて書くのは厳禁です。※改行は「\\n」、空白行は「\\n\\n」で出力。
+※ただし**120文字制限が最優先**なので、120を超える場合は型のセクションを1つ省略してでも字数を守ること。
 
 🚨【広告タグの使い分け】🚨
 ・Amazon案件：末尾に「[ad]」
@@ -281,9 +290,9 @@ ${analysisInput}
   "recommended_action": "戦略（シャドウバン対策の場合はその旨を記載）",
   "affiliate_candidates": "具体的な案件名（シャドウバン対策の場合は「なし」）",
   "post_angles": "切り口",
-  "tweet_1": "投稿案1（収益化なら型を使用。シャドウバン対策ならリンク・タグなしの純粋なつぶやき）",
-  "tweet_2": "投稿案2（収益化なら型を使用。シャドウバン対策ならリンク・タグなしの純粋なつぶやき）",
-  "tweet_3": "投稿案3（完全な交流・問いかけ用。リンク・タグなし）",
+  "tweet_1": "投稿案1（必ず120文字以内。収益化なら型を使用。シャドウバン対策ならリンク・タグなしの純粋なつぶやき）",
+  "tweet_2": "投稿案2（必ず120文字以内。収益化なら型を使用。シャドウバン対策ならリンク・タグなしの純粋なつぶやき）",
+  "tweet_3": "投稿案3（必ず120文字以内。完全な交流・問いかけ用。リンク・タグなし）",
   "cautions": "注意点"
 }
 `;
@@ -333,6 +342,12 @@ ${analysisInput}
       }, { status: 400 });
     }
 
+    const enforced = await enforceTweetLengths(genAI, {
+      tweet_1: data.tweet_1,
+      tweet_2: data.tweet_2,
+      tweet_3: data.tweet_3,
+    });
+
     const insertData = {
       title: data.title,
       category: data.category,
@@ -343,9 +358,9 @@ ${analysisInput}
       recommended_action: data.recommended_action,
       affiliate_candidates: data.affiliate_candidates,
       post_angles: data.post_angles,
-      tweet_1: data.tweet_1,
-      tweet_2: data.tweet_2,
-      tweet_3: data.tweet_3,
+      tweet_1: enforced.tweet_1,
+      tweet_2: enforced.tweet_2,
+      tweet_3: enforced.tweet_3,
       cautions: data.cautions,
       original_url: isUrl ? trimmedInput : `keyword:${trimmedInput}`
     };

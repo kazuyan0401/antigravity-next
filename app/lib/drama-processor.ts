@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { enforceTweetLengths } from './tweet-shrink';
 
 export type DramaRecord = {
   id: number | string;
@@ -383,6 +384,7 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
 6. tweet_2/tweet_3 のアフィリエイトリンク部分は必ず文字列「[アフィリリンク]」をそのまま埋め込む（実URLは絶対に書かない）
 7. Amazon案件は末尾に「[ad]」、楽天案件は先頭に「PR」を付与
 8. **出力前の自己点検**: 各tweetに「【」が含まれていたら、それは管理用見出しの混入なので削除して書き直すこと
+9. 🚨**文字数上限120文字（X規約厳守）**🚨：tweet_1 / tweet_2 / tweet_3 の本文は**必ず合計120文字以内**。改行「\\n」も1文字、絵文字も1文字、「[アフィリリンク]」は9文字、「[ad]」は4文字、「PR」は2文字としてカウント。121文字以上は絶対NG。出力前に必ず自分で文字数を数え、超えていたら枕詞・補足・空白行を削って字数優先で詰め直すこと（空白行は1つに減らしても可）。
 
 🚨【tweet_1 = アカウント強化用】🚨
 リンク・[ad]・PR・アフィ要素を一切含まない、純粋な期待感・感想・問いかけ投稿。
@@ -426,9 +428,9 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
   "recommended_action": "...",
   "affiliate_candidates": "...",
   "post_angles": "...",
-  "tweet_1": "...",
-  "tweet_2": "...",
-  "tweet_3": "...",
+  "tweet_1": "...（必ず120文字以内）",
+  "tweet_2": "...（必ず120文字以内）",
+  "tweet_3": "...（必ず120文字以内）",
   "cautions": "..."
 }
 `;
@@ -447,6 +449,16 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
   data.tweet_1 = stripHeaderPrefix(data.tweet_1 || '', cleanTitle, drama.title);
   data.tweet_2 = stripHeaderPrefix(data.tweet_2 || '', cleanTitle, drama.title);
   data.tweet_3 = stripHeaderPrefix(data.tweet_3 || '', cleanTitle, drama.title);
+
+  // 120文字超過分はAIで再短縮
+  const enforced = await enforceTweetLengths(genAI, {
+    tweet_1: data.tweet_1,
+    tweet_2: data.tweet_2,
+    tweet_3: data.tweet_3,
+  });
+  data.tweet_1 = enforced.tweet_1;
+  data.tweet_2 = enforced.tweet_2;
+  data.tweet_3 = enforced.tweet_3;
 
   const postUrl = drama.official_url || `https://www.crank-in.net/drama/${drama.season || ''}`;
 

@@ -650,17 +650,26 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
                   return (
                     <div key={num} className={`bg-white border rounded-xl overflow-hidden shadow-sm ${isEditing ? 'border-blue-300' : 'border-slate-200'}`}>
                       {isEditing ? (
-                        <textarea
-                          value={editData[tweetKey] || ''}
-                          onChange={(e) => setEditData({...editData, [tweetKey]: e.target.value})}
-                          className="w-full p-4 text-sm text-slate-700 leading-relaxed bg-blue-50/30 outline-none resize-y min-h-[120px]"
-                          placeholder={`ツイート案 ${num}`}
-                        />
+                        <>
+                          <textarea
+                            value={editData[tweetKey] || ''}
+                            onChange={(e) => setEditData({...editData, [tweetKey]: e.target.value})}
+                            className="w-full p-4 text-sm text-slate-700 leading-relaxed bg-blue-50/30 outline-none resize-y min-h-[120px]"
+                            placeholder={`ツイート案 ${num}`}
+                          />
+                          <div className="bg-white border-t border-slate-100 p-2 text-right">
+                            <span className={`text-xs font-medium ${(editData[tweetKey]?.length || 0) > 120 ? 'text-red-600 font-bold' : (editData[tweetKey]?.length || 0) > 110 ? 'text-amber-600' : 'text-slate-400'}`}>
+                              {editData[tweetKey]?.length || 0}/120文字
+                            </span>
+                          </div>
+                        </>
                       ) : (
                         <>
                           <div className="p-4 text-sm text-slate-700 leading-relaxed whitespace-pre-wrap bg-slate-50/50">{currentTweet}</div>
                           <div className="bg-white border-t border-slate-100 p-3 flex justify-between items-center">
-                            <span className="text-xs text-slate-400 font-medium">{currentTweet.length}文字</span>
+                            <span className={`text-xs font-medium ${currentTweet.length > 120 ? 'text-red-600 font-bold' : currentTweet.length > 110 ? 'text-amber-600' : 'text-slate-400'}`}>
+                              {currentTweet.length}文字{currentTweet.length > 120 ? ' ⚠️120超' : ''}
+                            </span>
                             <button 
                               onClick={() => handleCopy(currentTweet, num)}
                               className={`text-xs font-bold px-4 py-2 rounded-lg transition-colors ${copiedIndex === num ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
