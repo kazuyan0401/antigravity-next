@@ -1,7 +1,14 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
+import { requireAdmin } from '@/app/lib/admin-auth';
 
+// 旧: 招待制セルフ登録用エンドポイント。現在は kazuya が管理画面の
+// 一括インポートで登録する運用のため、クライアントから呼ばれていない。
+// 削除はせず、admin 認証で塞いで残してある（service role を直接握るため
+// 合言葉だけの保護では総当りで突破され得るのを避ける目的）。
 export async function POST(req: Request) {
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
   try {
     const { email, password, secretWord } = await req.json();
 

@@ -62,7 +62,7 @@ export default function Home() {
   const handleSaveEdit = async () => {
     setIsSaving(true);
     try {
-      const res = await fetch('/api/update-post', {
+      const res = await adminFetch('/api/update-post', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editData)
@@ -426,10 +426,10 @@ export default function Home() {
     if (!inputUrl) return;
     setIsGenerating(true);
     try {
-      const res = await fetch('/api/generate', {
+      const res = await adminFetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: inputUrl, memo: inputMemo }) 
+        body: JSON.stringify({ url: inputUrl, memo: inputMemo })
       });
       const result = await res.json();
       if (result.success) {
@@ -467,7 +467,7 @@ export default function Home() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ post_id: selectedItem.id }),
           })
-        : await fetch('/api/generate', {
+        : await adminFetch('/api/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
