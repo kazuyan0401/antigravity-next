@@ -85,11 +85,22 @@ export default function Home() {
   };
   // 🌟 ここまで追加
 
+  // admin API 呼び出し用 fetch。現在のセッションの access_token を Bearer で送る。
+  const adminFetch = async (input: string, init: RequestInit = {}) => {
+    if (!supabase) throw new Error('supabase 未初期化');
+    const { data: { session } } = await supabase.auth.getSession();
+    const headers = new Headers(init.headers);
+    if (session?.access_token) {
+      headers.set('Authorization', `Bearer ${session.access_token}`);
+    }
+    return fetch(input, { ...init, headers });
+  };
+
   // ユーザー管理機能
   const fetchUsers = async () => {
     setUserManagementLoading(true);
     try {
-      const res = await fetch('/api/admin/users');
+      const res = await adminFetch('/api/admin/users');
       const result = await res.json();
       if (result.success) setUsers(result.users);
     } catch (err) {
@@ -103,7 +114,7 @@ export default function Home() {
     if (!newUserEmail || !newUserPassword) return;
     setUserMessage('作成中...');
     try {
-      const res = await fetch('/api/admin/users', {
+      const res = await adminFetch('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: newUserEmail, password: newUserPassword })
@@ -175,7 +186,7 @@ export default function Home() {
     setBulkResults(null);
     setBulkSuccessPairs([]);
     try {
-      const res = await fetch('/api/admin/users', {
+      const res = await adminFetch('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bulk: true, users })
@@ -201,7 +212,7 @@ export default function Home() {
   const handleDeleteUser = async (userId: string, email: string) => {
     if (!confirm(`${email} のアカウントを削除しますか？\nこの操作は元に戻せません。`)) return;
     try {
-      const res = await fetch('/api/admin/delete-user', {
+      const res = await adminFetch('/api/admin/delete-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId })
@@ -223,7 +234,7 @@ export default function Home() {
     setDramaLoading(true);
     try {
       const url = season ? `/api/admin/drama/list?season=${season}` : '/api/admin/drama/list';
-      const res = await fetch(url);
+      const res = await adminFetch(url);
       const result = await res.json();
       if (result.success) {
         setDramas(result.dramas);
@@ -243,7 +254,7 @@ export default function Home() {
     setSeasonBatchLoading(true);
     setDramaMessage('crank-in.netから取得中...しばらくお待ちください');
     try {
-      const res = await fetch('/api/admin/drama/season-batch', {
+      const res = await adminFetch('/api/admin/drama/season-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ season: dramaSeason }),
@@ -267,7 +278,7 @@ export default function Home() {
     setUrlBackfillLoading(true);
     setDramaMessage('crank-in.netからURLペアを抽出中...しばらくお待ちください');
     try {
-      const res = await fetch('/api/admin/drama/url-backfill', {
+      const res = await adminFetch('/api/admin/drama/url-backfill', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ season: dramaSeason }),
@@ -291,7 +302,7 @@ export default function Home() {
 
   const handleToggleDrama = async (id: string, enabled: boolean) => {
     try {
-      const res = await fetch('/api/admin/drama/toggle', {
+      const res = await adminFetch('/api/admin/drama/toggle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, enabled: !enabled }),
@@ -306,7 +317,7 @@ export default function Home() {
   const handleDeleteDrama = async (id: string, title: string) => {
     if (!confirm(`「${title}」を監視対象から削除しますか？\n紐づくキューも削除されます。`)) return;
     try {
-      const res = await fetch('/api/admin/drama/toggle', {
+      const res = await adminFetch('/api/admin/drama/toggle', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
@@ -451,7 +462,7 @@ export default function Home() {
       // ドラマ投稿の再分析は専用エンドポイント（drama-process と同じロジック）に振る
       // ニュース記事用の /api/generate と完全分離することで、title混入バグの再発を構造的に防ぐ
       const res = isDrama
-        ? await fetch('/api/admin/drama/reprocess', {
+        ? await adminFetch('/api/admin/drama/reprocess', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ post_id: selectedItem.id }),

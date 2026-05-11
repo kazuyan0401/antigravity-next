@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
+import { requireAdmin } from '@/app/lib/admin-auth';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -76,6 +77,8 @@ async function parallelLimit<T, R>(items: T[], limit: number, fn: (item: T) => P
 }
 
 export async function POST(req: Request) {
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
   try {
     const { season } = await req.json();
     if (!season || !/^(spring|summer|autumn|winter)\d{4}$/.test(season)) {

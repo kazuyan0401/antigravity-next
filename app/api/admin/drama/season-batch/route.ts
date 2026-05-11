@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
+import { requireAdmin } from '@/app/lib/admin-auth';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -15,6 +16,8 @@ const fetchHeaders = {
 const DAY_MAP: Record<string, number> = { '日': 0, '月': 1, '火': 2, '水': 3, '木': 4, '金': 5, '土': 6 };
 
 export async function POST(req: Request) {
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
   try {
     const { season } = await req.json();
     if (!season || !/^(spring|summer|autumn|winter)\d{4}$/.test(season)) {

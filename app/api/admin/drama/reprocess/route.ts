@@ -2,11 +2,14 @@ import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
 import { processDrama, DramaRecord } from '@/app/lib/drama-processor';
+import { requireAdmin } from '@/app/lib/admin-auth';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 export async function POST(req: Request) {
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
   try {
     const { post_id } = await req.json();
     if (!post_id) {
