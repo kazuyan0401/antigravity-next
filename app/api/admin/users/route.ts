@@ -8,16 +8,23 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 export async function GET() {
   try {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
-    const { data, error } = await supabase.auth.admin.listUsers();
-    if (error) throw error;
 
-    const users = data.users.map(u => ({
-      id: u.id,
-      email: u.email,
-      created_at: u.created_at,
-    }));
+    // Supabase Admin API の listUsers はデフォルト50件/ページ。
+    // 全件取れるようページングしてすべて回収する。
+    const perPage = 1000;
+    let page = 1;
+    const allUsers: { id: string; email: string | undefined; created_at: string }[] = [];
+    while (true) {
+      const { data, error } = await supabase.auth.admin.listUsers({ page, perPage });
+      if (error) throw error;
+      for (const u of data.users) {
+        allUsers.push({ id: u.id, email: u.email, created_at: u.created_at });
+      }
+      if (data.users.length < perPage) break;
+      page++;
+    }
 
-    return NextResponse.json({ success: true, users });
+    return NextResponse.json({ success: true, users: allUsers });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
