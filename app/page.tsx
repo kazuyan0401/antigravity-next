@@ -133,13 +133,8 @@ export default function Home() {
     }
   };
 
-  // 紛らわしい文字 (0/O/o/1/l/I) を除いた8桁のランダムPW
-  const generatePassword = () => {
-    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
-    const arr = new Uint32Array(8);
-    crypto.getRandomValues(arr);
-    return Array.from(arr, n => chars[n % chars.length]).join('');
-  };
+  // デフォルト初期パスワード。何も入力されなかった場合や「自動生成」ボタン押下時に使う。
+  const generatePassword = () => 'aijinext26';
 
   // 登録結果(メアド,パスワード)をCSVファイルとしてダウンロード
   const handleDownloadBulkCsv = () => {
@@ -169,7 +164,7 @@ export default function Home() {
   const handleBulkCreate = async () => {
     if (!bulkInput.trim()) return;
     const lines = bulkInput.trim().split('\n').filter(l => l.trim());
-    // 行ごとのPW優先度: ① "メアド,PW" 形式の個別PW > ② 統一初期PW欄 > ③ ランダム生成
+    // 行ごとのPW優先度: ① "メアド,PW" 形式の個別PW > ② 統一初期PW欄 > ③ デフォルト(aijinext26)
     const unified = bulkInitialPassword.trim();
     const users = lines.map(line => {
       const parts = line.split(',').map(s => s.trim());
@@ -890,12 +885,12 @@ AI側で「今日のテレビ番組」等の言葉に丸めることは絶対に
               <>
                 <h3 className="text-sm font-bold text-blue-600 mb-2">一括インポート</h3>
                 <p className="text-[11px] text-slate-400 mb-3">
-                  メールアドレスを1行ずつ貼り付け。下の「初期パスワード」欄に統一PWを入れると全員そのPWで登録できます（空欄ならランダム生成）。<br />
+                  メールアドレスを1行ずつ貼り付け。下の「初期パスワード」欄に統一PWを入れると全員そのPWで登録できます（空欄なら aijinext26 が初期PWになります）。<br />
                   特定の行だけ個別PWにしたい場合は「メアド,パスワード」形式で入力してください。
                 </p>
                 <input
                   type="text"
-                  placeholder="初期パスワード（例: eijinews2026） / 空欄ならランダム生成"
+                  placeholder="初期パスワード / 空欄なら aijinext26"
                   value={bulkInitialPassword}
                   onChange={(e) => setBulkInitialPassword(e.target.value)}
                   className="w-full p-3 mb-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
