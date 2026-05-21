@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import { processDrama, DramaRecord } from '@/app/lib/drama-processor';
 import { enforceTweetLengths } from '@/app/lib/tweet-shrink';
 import { enforceTweetMinLengths } from '@/app/lib/tweet-expand';
+import { sanitizePost } from '@/app/lib/tweet-sanitize';
 import { requireAdmin } from '@/app/lib/admin-auth';
 
 export const maxDuration = 300;
@@ -383,10 +384,20 @@ ${analysisInput}
       }, { status: 400 });
     }
 
-    const shrunk = await enforceTweetLengths(genAI, {
+    // 🌟 サーバ側サニタイズ（1回目）
+    const sanitized1 = sanitizePost({
+      title: data.title,
+      source_summary: data.source_summary,
+      purpose: data.purpose,
       tweet_1: data.tweet_1,
       tweet_2: data.tweet_2,
       tweet_3: data.tweet_3,
+    });
+
+    const shrunk = await enforceTweetLengths(genAI, {
+      tweet_1: sanitized1.tweet_1,
+      tweet_2: sanitized1.tweet_2,
+      tweet_3: sanitized1.tweet_3,
     });
     const expandContext = [data.title, data.source_summary, data.why_now, data.affiliate_candidates]
       .filter(Boolean).join('\n');
@@ -396,19 +407,29 @@ ${analysisInput}
       tweet_3: shrunk.tweet_3,
     }, expandContext);
 
+    // 🌟 サーバ側サニタイズ（2回目：enforce 後の最終ガード）
+    const sanitized2 = sanitizePost({
+      title: data.title,
+      source_summary: data.source_summary,
+      purpose: sanitized1.purpose,
+      tweet_1: enforced.tweet_1,
+      tweet_2: enforced.tweet_2,
+      tweet_3: enforced.tweet_3,
+    });
+
     const insertData = {
       title: data.title,
       category: data.category,
-      purpose: data.purpose,
+      purpose: sanitized2.purpose,
       time_status: data.time_status,
       source_summary: data.source_summary,
       why_now: data.why_now,
       recommended_action: data.recommended_action,
       affiliate_candidates: data.affiliate_candidates,
       post_angles: data.post_angles,
-      tweet_1: enforced.tweet_1,
-      tweet_2: enforced.tweet_2,
-      tweet_3: enforced.tweet_3,
+      tweet_1: sanitized2.tweet_1,
+      tweet_2: sanitized2.tweet_2,
+      tweet_3: sanitized2.tweet_3,
       cautions: data.cautions,
       original_url: isUrl ? trimmedInput : `keyword:${trimmedInput}`
     };

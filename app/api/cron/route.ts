@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import Parser from 'rss-parser';
 import { enforceTweetLengths } from '@/app/lib/tweet-shrink';
 import { enforceTweetMinLengths } from '@/app/lib/tweet-expand';
+import { sanitizePost } from '@/app/lib/tweet-sanitize';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -307,6 +308,13 @@ export async function GET(req: Request) {
 3. NPO法人の活動、政治・経済の硬すぎるニュース、事件・事故・災害のネガティブなニュース
 4. リサーチ結果が「【話題の特定不可】」または「【リサーチ失敗】」で始まる場合（情報不足のため）
 
+🚨【STEP0.5：デリケート話題の強制判定（最優先・絶対）】🚨
+タイトルまたは取得情報に以下のキーワードが含まれる場合は **必ず "purpose": "シャドウバン対策"** にし、tweet_1/tweet_2/tweet_3 のいずれにも「[アフィリリンク]」「[ad]」「PR」「#ad」「#PR」を**1文字も含めてはいけません**。
+- 訃報／死去／逝去／永眠／ご冥福／謹んで／哀悼／葬儀／急逝
+- 事件／事故／逮捕／謝罪／不祥事／炎上／スキャンダル／訴訟／提訴／送検／懲役／罰金
+- 離婚／自殺／自死／飛び降り
+該当した場合は STEP1 をスキップして直接シャドウバン対策モードへ進み、後述の「デリケートな話題」ルールに従ってください（感想煽る問いかけ禁止／絵文字0〜1個／見守る姿勢）。
+
 🚨【STEP1：収益化判定（最重要の絶対ルール）】🚨
 まず、このニュースでアフィリエイトを行うかどうかの「判定」を厳格に行ってください。
 以下の【収益化NG条件】に1つでも当てはまる場合は、必ず目的を「シャドウバン対策」にしてください。
@@ -336,6 +344,39 @@ export async function GET(req: Request) {
 
 ◆判定が「シャドウバン対策」の場合：
 後述の【型】は完全に無視してください。アフィリリンク、[ad]、PRなどの広告要素は【絶対に使用禁止】です。tweet_1 〜 tweet_3 のすべてを、リンクを含まない「純粋な感想」や「フォロワーへの問いかけ」にしてください。
+🚨**自己検証チェックリスト（出力前に必ず確認）**🚨
+"purpose": "シャドウバン対策" を選んだ場合、tweet_1/tweet_2/tweet_3 の本文中に以下の文字列が**1個でも**含まれていたら**最初からやり直す**こと：
+- 文字列「[アフィリリンク]」
+- 文字列「[ad]」
+- 単独語の「PR」（ハッシュタグの「#PR」「#ad」を含む）
+これは検出されたら即無効とみなされ、サーバ側で機械的に除去されますが、その結果ツイートの長さや構成が崩れます。最初からリンク・タグなしで書くのが必須です。
+
+◆判定が「シャドウバン対策」かつ**デリケートな話題**（事件・事故・謝罪・不祥事・離婚・訃報・炎上・スキャンダル等）の場合：
+- ❌ 「率直な感想が聞きたい」「みんなはどう感じる？」「コメントで教えて」など**感想を煽る問いかけは絶対禁止**（炎上助長になる）
+- ❌ 当事者の責任論や善悪判断に踏み込まない（「○○が悪い」「××は許せない」等は厳禁）
+- ❌ 絵文字は使わない、または0〜1個に抑える（軽い絵文字はTPO違反）
+- ⭕️ 中立的な事実言及＋見守る姿勢で締める（「今後の対応を見守りたい」「冷静な議論を願う」「早期解決を願うばかり」など独り言型）
+- ⭕️ tweet_3も「感想ください型」ではなく、話題転換型（一般論や別の関連話題で締める）にする
+
+🚨【絶対ルール：絵文字は1tweetあたり2〜3個に厳選（デリケート話題は除く）】🚨
+通常の投稿（収益化＋カジュアルなシャドウバン対策）では、各tweetに**2〜3個**の絵文字を使用すること。
+- ❌ 0個や1個だけは情報が硬すぎてNG／4個以上は雑音でNG
+- ❌ 同じ絵文字を1tweet内で複数回使うのは禁止（バリエーションを出す）
+- ❌ ✨と👇に偏らせない（実投稿で✨が突出していた）。😍🤔🎶🥰😳🎉🐎🎬🎮️🆓🔥😭😆😅💦などのバリエーションから話題に合うものを選ぶ
+- ⭕️ 構成の目安：感情系1つ（😆😭🔥など）＋ 誘導矢印1つ（👇⬇️➡️など）＋ 補助1つ（任意・ジャンル絵文字）
+
+🚨【絶対ルール：決まり文句・テンプレ表現の禁止リスト】🚨
+直近の生成投稿で使い古されたフレーズは絶対使用禁止。同義の別表現に必ず言い換えること。
+❌ 禁止フレーズ（このまま使うと即NG）：
+- 「楽しみすぎる」「ワクワクが止まらない」「胸熱」「激アツ」「話題沸騰」「見逃せない」「要チェック」（飽きられた煽り語）
+- 「みんなはどう？」「みんなはどう思う？」「コメントで教えて」「率直な感想聞きたい」「感想聞かせて」（テンプレ問いかけ）
+- 「心に響く」「心から願う」「心を打たれる」「感無量」（陳腐な感情表現）
+- 「本当に」を1tweet内で2回以上、「感動」を1tweet内で2回以上（多用厳禁）
+⭕️ 代替方向：
+- 具体名（番組名・選手名・曲名・キャラ名・役名・固有名詞）で語る
+- 感情は「鳥肌立った」「ゾクッとした」「やられた」「沼った」「刺さった」「クセになる」など具体的な体感語
+- 問いかけは「○○派？△△派？」「どっち推し？」「一番好きなシーンは？」など二択や具体選択肢で
+- 1tweet内で同じ感情表現（最高／神／すごい／ヤバい等の空虚な賛美）を連発しない
 
 🚨【絶対ルール：文字数レンジ100〜120字（X規約厳守 & 中身担保）】🚨
 tweet_1 / tweet_2 / tweet_3 はそれぞれ単独で **必ず100文字以上120文字以内** に収めること（収益化/シャドウバン対策どちらも同じ）。
@@ -440,10 +481,27 @@ ${contentText}
       return NextResponse.json({ success: true, message: 'is_safe=falseでスキップ', source: source.name, title });
     }
 
-    const shrunk = await enforceTweetLengths(genAI, {
+    // 🌟 サーバ側サニタイズ（1回目）
+    // - 訃報等のデリケート話題なら purpose を強制的にシャドウバン対策へ
+    // - シャドウバン対策の場合は [アフィリリンク]/[ad]/PR を機械除去
+    // - 改行リテラル \n / \\n を実改行へ
+    // - 禁止フレーズ・テンプレ問いかけを置換／削除
+    const sanitized1 = sanitizePost({
+      title: data.title,
+      source_summary: data.source_summary,
+      purpose: data.purpose,
       tweet_1: data.tweet_1,
       tweet_2: data.tweet_2,
       tweet_3: data.tweet_3,
+    });
+    if (sanitized1.forcedShadowban) {
+      console.log(`デリケート話題検知: purpose を強制シャドウバン対策へ上書き (${title})`);
+    }
+
+    const shrunk = await enforceTweetLengths(genAI, {
+      tweet_1: sanitized1.tweet_1,
+      tweet_2: sanitized1.tweet_2,
+      tweet_3: sanitized1.tweet_3,
     });
     const expandContext = [data.title, data.source_summary, data.why_now, data.affiliate_candidates]
       .filter(Boolean).join('\n');
@@ -453,19 +511,30 @@ ${contentText}
       tweet_3: shrunk.tweet_3,
     }, expandContext);
 
+    // 🌟 サーバ側サニタイズ（2回目）
+    // enforce 段階で AI が禁止語やアフィ要素を復活させるリスクがあるため最終ガードを掛ける
+    const sanitized2 = sanitizePost({
+      title: data.title,
+      source_summary: data.source_summary,
+      purpose: sanitized1.purpose,
+      tweet_1: enforced.tweet_1,
+      tweet_2: enforced.tweet_2,
+      tweet_3: enforced.tweet_3,
+    });
+
     const insertData = {
       title: data.title,
       category: data.category,
-      purpose: data.purpose,
+      purpose: sanitized2.purpose,
       time_status: data.time_status,
       source_summary: data.source_summary,
       why_now: data.why_now,
       recommended_action: data.recommended_action,
       affiliate_candidates: data.affiliate_candidates,
       post_angles: data.post_angles,
-      tweet_1: enforced.tweet_1,
-      tweet_2: enforced.tweet_2,
-      tweet_3: enforced.tweet_3,
+      tweet_1: sanitized2.tweet_1,
+      tweet_2: sanitized2.tweet_2,
+      tweet_3: sanitized2.tweet_3,
       cautions: data.cautions,
       original_url: url,
     };

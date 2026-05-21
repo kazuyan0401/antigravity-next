@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { enforceTweetLengths } from './tweet-shrink';
 import { enforceTweetMinLengths } from './tweet-expand';
+import { sanitizePost } from './tweet-sanitize';
 
 export type DramaRecord = {
   id: number | string;
@@ -392,9 +393,27 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
    - 出力前に必ず自分で文字数を数え、100字未満なら情報を足し（あらすじ/見どころ/共感ポイント/具体的シーン/放送回見どころ）、120字超なら語尾・修飾語・空白行を削って詰める
    - ❌ 実例NG: 「主題歌誰なんだろう？気になる」(15字) ／ 「クラシックの行方は？」(10字) ← どちらも中身ゼロで絶対NG
 
+10. 🚨**絵文字は1tweetあたり2〜3個に厳選**🚨：
+    - ❌ 0個や1個だけは情報が硬すぎてNG／4個以上は雑音でNG
+    - ❌ 同じ絵文字を1tweet内で複数回使うのは禁止（バリエーションを出す）
+    - ❌ ✨と👇に偏らせない（実投稿で✨が突出していた）。😍🤔🎶🥰😳🎉🎬📺🎮️🆓🔥😭😆😅💦などのバリエーションから話題に合うものを選ぶ
+    - ⭕️ 構成目安：感情系1つ（😆😭🔥など）＋ 誘導矢印1つ（👇⬇️➡️など）＋ 補助1つ（任意・ジャンル絵文字）
+
+11. 🚨**決まり文句・テンプレ表現の禁止リスト**🚨：直近の生成投稿で使い古されたフレーズは絶対使用禁止。
+    ❌ 禁止フレーズ：
+    - 「楽しみすぎる」「ワクワクが止まらない」「胸熱」「激アツ」「話題沸騰」「見逃せない」「要チェック」（飽きられた煽り語）
+    - 「みんなはどう？」「みんなはどう思う？」「コメントで教えて」「率直な感想聞きたい」「感想聞かせて」（テンプレ問いかけ）
+    - 「心に響く」「心から願う」「心を打たれる」「感無量」（陳腐な感情表現）
+    - 「本当に」を1tweet内で2回以上、「感動」を1tweet内で2回以上（多用厳禁）
+    ⭕️ 代替方向：
+    - 具体名（番組名・キャスト名・役名・曲名・原作タイトル）で語る
+    - 感情は「鳥肌」「ゾクッ」「やられた」「沼った」「刺さった」「クセになる」など具体的な体感語
+    - 問いかけは「○○派？△△派？」「どっち推し？」「一番好きなシーンは？」など二択や具体選択肢で
+    - 1tweet内で同じ感情表現（最高／神／すごい／ヤバい等の空虚な賛美）を連発しない
+
 🚨【tweet_1 = アカウント強化用】🚨
 リンク・[ad]・PR・アフィ要素を一切含まない、純粋な期待感・感想・問いかけ投稿。
-例: 「今夜放送の「${drama.title}」楽しみすぎる…\\n\\n第N話、〇〇がついに△△する展開ヤバい\\n\\n見る人いる？感想シェアしたい🥰」
+例: 「今夜23時から「${drama.title}」第N話🎬\\n\\n〇〇がついに△△する展開、予告だけで鳥肌立った…\\n\\n△△派？□□派？リアタイ前に教えて👇」（あくまで構造例。固有名詞や絵文字は話題に合わせて選ぶこと）
 
 🚨【tweet_2 = 原作アフィ用】🚨
 ドラマの原作（漫画・小説・コミック等）をAmazon/楽天で購入誘導するアフィ投稿。
@@ -456,6 +475,23 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
   data.tweet_2 = stripHeaderPrefix(data.tweet_2 || '', cleanTitle, drama.title);
   data.tweet_3 = stripHeaderPrefix(data.tweet_3 || '', cleanTitle, drama.title);
 
+  // 🌟 サニタイズ1回目（プロンプト違反の機械的矯正）
+  const sanitized1 = sanitizePost({
+    title: data.title,
+    source_summary: data.source_summary,
+    purpose: data.purpose,
+    tweet_1: data.tweet_1,
+    tweet_2: data.tweet_2,
+    tweet_3: data.tweet_3,
+  });
+  if (sanitized1.forcedShadowban) {
+    console.log(`ドラマ:デリケート話題検知: purpose を強制シャドウバン対策へ (${drama.title})`);
+  }
+  data.purpose = sanitized1.purpose;
+  data.tweet_1 = sanitized1.tweet_1;
+  data.tweet_2 = sanitized1.tweet_2;
+  data.tweet_3 = sanitized1.tweet_3;
+
   // 120文字超過分はAIで再短縮、100文字未満はAIで拡張（最終的に100〜120字を保証）
   const shrunk = await enforceTweetLengths(genAI, {
     tweet_1: data.tweet_1,
@@ -475,9 +511,20 @@ ${officialContent || '（公式サイト取得不可：' + (officialFetchError |
     tweet_2: shrunk.tweet_2,
     tweet_3: shrunk.tweet_3,
   }, expandContext);
-  data.tweet_1 = enforced.tweet_1;
-  data.tweet_2 = enforced.tweet_2;
-  data.tweet_3 = enforced.tweet_3;
+
+  // 🌟 サニタイズ2回目（enforce後の最終ガード）
+  const sanitized2 = sanitizePost({
+    title: data.title,
+    source_summary: data.source_summary,
+    purpose: data.purpose,
+    tweet_1: enforced.tweet_1,
+    tweet_2: enforced.tweet_2,
+    tweet_3: enforced.tweet_3,
+  });
+  data.purpose = sanitized2.purpose;
+  data.tweet_1 = sanitized2.tweet_1;
+  data.tweet_2 = sanitized2.tweet_2;
+  data.tweet_3 = sanitized2.tweet_3;
 
   const postUrl = drama.official_url || `https://www.crank-in.net/drama/${drama.season || ''}`;
 
