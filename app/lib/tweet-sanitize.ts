@@ -7,6 +7,8 @@
 
 // 訃報・事件・事故・スキャンダル系のキーワード。
 // タイトル or source_summary に該当があれば自動で「シャドウバン対策」へ。
+type TweetKey = 'tweet_1' | 'tweet_2' | 'tweet_3';
+
 const DELICATE_KEYWORDS = [
   '訃報', '死去', '逝去', '永眠', 'ご冥福', '謹んで', '哀悼', '葬儀', '葬式',
   '事件', '事故', '逮捕', '謝罪', '不祥事', '炎上', 'スキャンダル',
@@ -41,6 +43,35 @@ export function stripAffiliateMarkers(text: string | null | undefined): string {
   out = out.replace(/([\s、。！？])PR(?=\s|$|\n|[、。！？#])/g, '$1');
   // 連続改行・行末空白を整理
   out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return out;
+}
+
+// 本文中に紛れた「裸URL」「ダミー/捏造ドメイン」を除去する。
+// プロンプトは実URLを禁止し [アフィリリンク] プレースホルダのみ許可しているが、
+// AI が稀に "racexyz.com/xxxxx" のような偽ドメインや実URLを直書きする
+// （誤クリック・誤誘導・規約違反の温床）。誤爆を避けるため、対象は
+//  (1) http(s):// で始まる裸URL
+//  (2) パスを伴うドメイン（"example.com/xxxx"）— 単体の "MLB.TV" 等の正当な
+//      サービス名は除外
+//  (3) xxx を3連以上含む明らかなダミードメイン
+// のみに限定する。
+const BARE_URL_PATTERNS: RegExp[] = [
+  /https?:\/\/\S+/gi,
+  /\b[a-z0-9][a-z0-9-]*\.(?:com|net|jp|tv|co|io|me|org|info|xyz|link|to|cc)\/\S*/gi,
+  /\b[a-z0-9-]*x{3,}[a-z0-9-]*\.(?:com|net|jp|tv|co|io|me|org|info|xyz|link|to|cc)\b/gi,
+];
+
+export function stripBareUrls(text: string | null | undefined): string {
+  if (!text) return text || '';
+  let out = text;
+  for (const re of BARE_URL_PATTERNS) out = out.replace(re, '');
+  // URL を削った跡の余分な空白・記号を整える
+  out = out
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+([、。！？])/g, '$1')
+    .trim();
   return out;
 }
 
@@ -168,20 +199,26 @@ export function sanitizePost(input: SanitizeInput): SanitizeOutput {
   const forcedShadowban = delicate && originalPurpose !== 'シャドウバン対策';
   const isShadowban = purpose === 'シャドウバン対策';
 
-  const clean = (t?: string | null): string => {
+  // key も渡して tweet_3 の扱いを分岐させる。
+  // - シャドウバン対策: 全 tweet からアフィ要素を除去
+  // - 収益特化: tweet_3 は「リンク・タグなしの交流専用」（プロンプト型）なので、
+  //   AI が混入させた [アフィリリンク]/[ad]/PR をここで機械除去する
+  const clean = (t: string | null | undefined, key: TweetKey): string => {
     let out = normalizeNewlines(t);
-    if (isShadowban) out = stripAffiliateMarkers(out);
+    out = stripBareUrls(out); // 裸URL/偽ドメインは purpose を問わず除去
+    const stripAff = isShadowban || key === 'tweet_3';
+    if (stripAff) out = stripAffiliateMarkers(out);
     out = replaceBannedPhrases(out);
     out = replaceTemplateQuestions(out);
-    if (!isShadowban) out = normalizeLinkLayout(out);
+    if (!stripAff) out = normalizeLinkLayout(out);
     return out;
   };
 
   return {
     purpose,
-    tweet_1: clean(input.tweet_1),
-    tweet_2: clean(input.tweet_2),
-    tweet_3: clean(input.tweet_3),
+    tweet_1: clean(input.tweet_1, 'tweet_1'),
+    tweet_2: clean(input.tweet_2, 'tweet_2'),
+    tweet_3: clean(input.tweet_3, 'tweet_3'),
     delicate,
     forcedShadowban,
   };

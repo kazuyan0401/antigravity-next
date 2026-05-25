@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { TWEET_MAX_LENGTH, findOverflowTweets } from './tweet-length';
+import { TWEET_MAX_LENGTH, findOverflowTweets, hardTruncateTweet } from './tweet-length';
 
 type TweetKey = 'tweet_1' | 'tweet_2' | 'tweet_3';
 
@@ -47,10 +47,18 @@ export async function enforceTweetLengths(
         result[key] = shrunk;
         result.shrunk.push(key);
       } else {
-        console.warn(`tweet短縮失敗（${original.length}→${shrunk.length}文字）: ${key}`);
+        // AI短縮が上限を守れなかった/空を返した場合でも、確定的トランケートで
+        // 必ず上限以内に収める。over_max を素通しさせない最終保険。
+        const base = shrunk.length > 0 ? shrunk : original;
+        result[key] = hardTruncateTweet(base, TWEET_MAX_LENGTH);
+        result.shrunk.push(key);
+        console.warn(`tweet短縮AI失敗→ハードトランケート適用（${original.length}→${result[key]!.length}文字）: ${key}`);
       }
     } catch (e: any) {
-      console.warn(`tweet短縮エラー: ${key}: ${e?.message || e}`);
+      // 例外時も素通しせず、元文をトランケートして上限厳守
+      result[key] = hardTruncateTweet(original, TWEET_MAX_LENGTH);
+      result.shrunk.push(key);
+      console.warn(`tweet短縮エラー→ハードトランケート適用: ${key}: ${e?.message || e}`);
     }
   }
   return result;

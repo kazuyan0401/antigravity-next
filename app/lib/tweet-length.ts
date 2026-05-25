@@ -31,3 +31,44 @@ export function findUnderflowTweets(
   });
   return result;
 }
+
+// AI短縮/拡張が上限を守れなかった場合の、確定的な最終トランケート。
+// 末尾のリンク行（[アフィリリンク]/[ad]）とハッシュタグ行は可能な限り温存し、
+// 本文側を文末（。！？!?）境界で削って max 以内に必ず収める。
+// AIに頼らないため失敗しない＝over_max を物理的にゼロにするための保険。
+export function hardTruncateTweet(
+  text: string | null | undefined,
+  max: number = TWEET_MAX_LENGTH
+): string {
+  if (!text) return text || '';
+  if (text.length <= max) return text;
+
+  const lines = text.split('\n');
+  // 末尾の「リンク行・ハッシュタグ行・空行」は温存対象として退避
+  const keepTail: string[] = [];
+  while (
+    lines.length > 0 &&
+    /^\s*(?:\[アフィリリンク\]|\[ad\]|#|$)/i.test(lines[lines.length - 1])
+  ) {
+    keepTail.unshift(lines.pop() as string);
+  }
+  const tail = keepTail.join('\n').trim();
+  // tail だけで超過する場合は、tail を捨ててでも本文を優先（リンク無しでも上限厳守）
+  const tailCost = tail ? tail.length + 1 : 0; // +1 は本文との連結改行
+  const budget = max - tailCost;
+
+  let body = lines.join('\n').trim();
+  if (budget <= 0) {
+    // tail が大きすぎる → 本文を max で素直に切る（保険の保険）
+    return body.slice(0, max).trim() || text.slice(0, max).trim();
+  }
+  if (body.length > budget) {
+    let head = body.slice(0, budget);
+    // 直近の文末記号で自然に切る（あまりに短く切れすぎる場合はそのまま）
+    const m = head.match(/^[\s\S]*[。！？!?]/);
+    if (m && m[0].length >= budget * 0.5) head = m[0];
+    body = head.trim();
+  }
+  const joined = (tail ? `${body}\n\n${tail}` : body).trim();
+  return joined.length <= max ? joined : joined.slice(0, max).trim();
+}

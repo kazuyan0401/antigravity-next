@@ -1,12 +1,17 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { TWEET_MIN_LENGTH, TWEET_MAX_LENGTH, findUnderflowTweets } from './tweet-length';
+import { TWEET_MIN_LENGTH, TWEET_MAX_LENGTH, findUnderflowTweets, hardTruncateTweet } from './tweet-length';
 
 type TweetKey = 'tweet_1' | 'tweet_2' | 'tweet_3';
+
+// 拡張に使うモデルチェーン。lite が外し続けても flash で粘る。
+// generate route と同様、失敗時に上位モデルへフォールバックして成功率を上げる。
+const EXPAND_MODEL_CHAIN = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 
 async function expandSingle(
   genAI: GoogleGenerativeAI,
   text: string,
-  context?: string
+  context?: string,
+  modelName: string = 'gemini-2.5-flash-lite'
 ): Promise<string> {
   const ctxBlock = context
     ? `\n【参考情報（事実改変・捏造禁止のため必ず参照）】\n${context}\n`
@@ -28,7 +33,7 @@ ${text}
 
 【拡張版（${TWEET_MIN_LENGTH}〜${TWEET_MAX_LENGTH}字、本文のみ）】`;
 
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
+  const model = genAI.getGenerativeModel({ model: modelName });
   const result = await model.generateContent(prompt);
   let out = (await result.response.text()).trim();
   out = out.replace(/^```[a-z]*\n?/i, '').replace(/```$/, '').trim();
@@ -43,22 +48,53 @@ export async function enforceTweetMinLengths(
 ): Promise<{ tweet_1?: string; tweet_2?: string; tweet_3?: string; expanded: TweetKey[] }> {
   const result = { ...data, expanded: [] as TweetKey[] };
   const unders = findUnderflowTweets(data);
+  const inRange = (s: string) => s.length >= TWEET_MIN_LENGTH && s.length <= TWEET_MAX_LENGTH;
+
   for (const { key } of unders) {
     const original = data[key] || '';
-    try {
-      let expanded = await expandSingle(genAI, original, context);
-      // レンジ外なら一度だけ再試行
-      if (expanded.length < TWEET_MIN_LENGTH || expanded.length > TWEET_MAX_LENGTH) {
-        expanded = await expandSingle(genAI, expanded.length === 0 ? original : expanded, context);
+    // これまで得られた候補のうち「最も下限に近い／レンジ内」を保持しておき、
+    // 全試行がレンジ外でも元の短文に戻さず、一番マシな候補を採用する。
+    let best = original;
+    const better = (cand: string) => {
+      if (!cand) return false;
+      if (inRange(cand)) return true;                 // レンジ内は即採用優先
+      if (cand.length > TWEET_MAX_LENGTH) {           // 超過はトランケートで救えるので候補資格あり
+        return best.length < TWEET_MIN_LENGTH;        // bestがまだ下限未満なら超過候補の方がマシ
       }
-      if (expanded.length >= TWEET_MIN_LENGTH && expanded.length <= TWEET_MAX_LENGTH) {
-        result[key] = expanded;
-        result.expanded.push(key);
-      } else {
-        console.warn(`tweet拡張失敗（${original.length}→${expanded.length}文字、レンジ外）: ${key}`);
+      return cand.length > best.length && best.length < TWEET_MIN_LENGTH; // より長い不足候補
+    };
+
+    try {
+      // モデルチェーン × 各2回、最大4試行。レンジ内が出たら即終了。
+      outer: for (const modelName of EXPAND_MODEL_CHAIN) {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          let cand = '';
+          try {
+            const seed = best.length >= TWEET_MIN_LENGTH ? best : (best || original);
+            cand = await expandSingle(genAI, seed, context, modelName);
+          } catch (e: any) {
+            console.warn(`tweet拡張エラー(${modelName} #${attempt + 1}): ${key}: ${e?.message || e}`);
+            continue;
+          }
+          if (better(cand)) best = cand;
+          if (inRange(best)) break outer;
+        }
       }
     } catch (e: any) {
-      console.warn(`tweet拡張エラー: ${key}: ${e?.message || e}`);
+      console.warn(`tweet拡張致命的エラー: ${key}: ${e?.message || e}`);
+    }
+
+    // 超過していたら確定トランケートで上限以内へ（over_max を素通しさせない）。
+    if (best.length > TWEET_MAX_LENGTH) best = hardTruncateTweet(best, TWEET_MAX_LENGTH);
+
+    if (best !== original) {
+      result[key] = best;
+      result.expanded.push(key);
+    }
+    if (best.length < TWEET_MIN_LENGTH) {
+      // ここに来たら拡張は最善を尽くしたが下限未達。素通しはするが必ず警告を残す
+      // （下限は事実を捏造せず機械保証できないため。監視/手動補修で拾う対象）。
+      console.warn(`tweet拡張: 下限未達のまま採用（${original.length}→${best.length}文字）: ${key}`);
     }
   }
   return result;
