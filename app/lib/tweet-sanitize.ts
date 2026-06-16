@@ -7,6 +7,8 @@
 
 // 訃報・事件・事故・スキャンダル系のキーワード。
 // タイトル or source_summary に該当があれば自動で「シャドウバン対策」へ。
+import { hardTruncateTweet } from './tweet-length';
+
 type TweetKey = 'tweet_1' | 'tweet_2' | 'tweet_3';
 
 const DELICATE_KEYWORDS = [
@@ -211,6 +213,10 @@ export function sanitizePost(input: SanitizeInput): SanitizeOutput {
     out = replaceBannedPhrases(out);
     out = replaceTemplateQuestions(out);
     if (!stripAff) out = normalizeLinkLayout(out);
+    // 最終クランプ: normalizeLinkLayout がリンク/タグ行前後に空行を足して
+    // 字数を押し戻すケースがあるため、サニタイズ出力を必ず上限以内へ収める。
+    // sanitize は全生成経路の最終工程なので、ここで掛ければ over_max が物理ゼロになる。
+    out = hardTruncateTweet(out);
     return out;
   };
 
