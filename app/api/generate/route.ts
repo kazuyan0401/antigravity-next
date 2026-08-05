@@ -12,12 +12,18 @@ export const maxDuration = 300;
 
 const TRANSIENT_RE = /(503|UNAVAILABLE|Service Unavailable|overloaded|429|RESOURCE_EXHAUSTED|rate limit|deadline|ETIMEDOUT|ECONNRESET|fetch failed)/i;
 
-// thinking: true のモデルにだけ思考トークン上限を渡す。
-// gemini-2.5-flash-lite は既定で思考オフなので渡すと逆にコストが増える（gemini-thinking.ts 参照）。
+// limitThinking: true のモデルにだけ思考トークン上限を渡す。
+// gemini-2.5-flash-lite / gemini-3.5-flash-lite は既定で思考オフなので、
+// 渡すと逆に思考が発生してコストが増える（gemini-thinking.ts 参照）。
+//
+// 3段目は 2.5 系がまとめて不調になった時の保険なので、あえて別世代から選ぶ。
+// エイリアス（gemini-flash-lite-latest 等）は中身が予告なく入れ替わるためバージョン固定にする。
+// ⚠️ 2026-08-05 に旧3段目 gemini-2.0-flash が 404「no longer available」で死んでいるのを発見。
+//    ListModels には載ったままなので一覧を見ても気付けない。定期的に実呼び出しで確認すること。
 const MODEL_CHAIN: { model: string; retries: number; limitThinking?: boolean }[] = [
   { model: "gemini-2.5-flash", retries: 2, limitThinking: true },
   { model: "gemini-2.5-flash-lite", retries: 1 },
-  { model: "gemini-2.0-flash", retries: 1 },
+  { model: "gemini-3.5-flash-lite", retries: 1 },
 ];
 
 async function generateOnce(model: any, prompt: string, maxAttempts: number): Promise<string> {
