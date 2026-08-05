@@ -2,6 +2,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { enforceTweetLengths } from './tweet-shrink';
 import { enforceTweetMinLengths } from './tweet-expand';
 import { sanitizePost } from './tweet-sanitize';
+import { withThinkingBudget } from './gemini-thinking';
 
 export type DramaRecord = {
   id: number | string;
@@ -220,7 +221,7 @@ export async function processDrama(
 ): Promise<DramaProcessResult> {
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    generationConfig: { responseMimeType: 'application/json' },
+    generationConfig: withThinkingBudget({ responseMimeType: 'application/json' }),
   });
 
   // 公式サイト取得 + サブページ + JSONデータ
@@ -310,6 +311,7 @@ export async function processDrama(
       const groundingModel = genAI.getGenerativeModel({
         model: 'gemini-2.5-flash',
         tools: [{ google_search: {} } as any],
+        generationConfig: withThinkingBudget(),
       });
       const gJst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
       const gToday = `${gJst.getFullYear()}年${gJst.getMonth() + 1}月${gJst.getDate()}日(${DOW_LABEL[gJst.getDay()]}曜日)`;

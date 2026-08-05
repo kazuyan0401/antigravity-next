@@ -6,13 +6,16 @@ import { enforceTweetLengths } from '@/app/lib/tweet-shrink';
 import { enforceTweetMinLengths } from '@/app/lib/tweet-expand';
 import { sanitizePost } from '@/app/lib/tweet-sanitize';
 import { requireAdmin } from '@/app/lib/admin-auth';
+import { withThinkingBudget } from '@/app/lib/gemini-thinking';
 
 export const maxDuration = 300;
 
 const TRANSIENT_RE = /(503|UNAVAILABLE|Service Unavailable|overloaded|429|RESOURCE_EXHAUSTED|rate limit|deadline|ETIMEDOUT|ECONNRESET|fetch failed)/i;
 
-const MODEL_CHAIN: { model: string; retries: number }[] = [
-  { model: "gemini-2.5-flash", retries: 2 },
+// thinking: true のモデルにだけ思考トークン上限を渡す。
+// gemini-2.5-flash-lite は既定で思考オフなので渡すと逆にコストが増える（gemini-thinking.ts 参照）。
+const MODEL_CHAIN: { model: string; retries: number; limitThinking?: boolean }[] = [
+  { model: "gemini-2.5-flash", retries: 2, limitThinking: true },
   { model: "gemini-2.5-flash-lite", retries: 1 },
   { model: "gemini-2.0-flash", retries: 1 },
 ];
@@ -42,7 +45,13 @@ async function generateWithFallback(
 ): Promise<{ text: string; modelUsed: string }> {
   let lastErr: any;
   for (const cfg of MODEL_CHAIN) {
-    const model = genAI.getGenerativeModel({ model: cfg.model, ...modelOptions });
+    const model = genAI.getGenerativeModel({
+      ...modelOptions,
+      model: cfg.model,
+      generationConfig: cfg.limitThinking
+        ? withThinkingBudget(modelOptions.generationConfig)
+        : modelOptions.generationConfig,
+    });
     try {
       const text = await generateOnce(model, prompt, cfg.retries + 1);
       return { text, modelUsed: cfg.model };

@@ -5,6 +5,7 @@ import Parser from 'rss-parser';
 import { enforceTweetLengths } from '@/app/lib/tweet-shrink';
 import { enforceTweetMinLengths } from '@/app/lib/tweet-expand';
 import { sanitizePost } from '@/app/lib/tweet-sanitize';
+import { withThinkingBudget } from '@/app/lib/gemini-thinking';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -32,7 +33,10 @@ export async function GET(req: Request) {
 
     const supabase = createClient(supabaseUrl, supabaseKey);
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash", generationConfig: { responseMimeType: "application/json" } });
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash",
+      generationConfig: withThinkingBudget({ responseMimeType: "application/json" }),
+    });
     const parser = new Parser();
 
     // 🌟 日本時間の「時」と「分」を取得
@@ -263,6 +267,7 @@ export async function GET(req: Request) {
         const groundingModel = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
           tools: [{ google_search: {} } as any],
+          generationConfig: withThinkingBudget(),
         });
         const researchPrompt = `今日 ${todayLabel} に日本のSNS／検索トレンドで「${keyword}」が話題になっています。Google検索でこのキーワードがなぜ今話題なのか、関連する人物・商品・コンテキスト・最新ニュースを調べて、500〜1000字で日本語要約してください。
 - いつから話題か（昨日／今日／今週など）

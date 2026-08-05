@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { TWEET_MIN_LENGTH, TWEET_MAX_LENGTH, findUnderflowTweets, hardTruncateTweet } from './tweet-length';
+import { withThinkingBudget } from './gemini-thinking';
 
 type TweetKey = 'tweet_1' | 'tweet_2' | 'tweet_3';
 
@@ -33,7 +34,13 @@ ${text}
 
 【拡張版（${TWEET_MIN_LENGTH}〜${TWEET_MAX_LENGTH}字、本文のみ）】`;
 
-  const model = genAI.getGenerativeModel({ model: modelName });
+  // 2.5-flash は思考トークンが出っぱなしになるので上限を与える。
+  // 2.5-flash-lite は既定で思考オフなので、渡すと逆に思考が増える（gemini-thinking.ts 参照）。
+  const model = genAI.getGenerativeModel(
+    modelName === 'gemini-2.5-flash'
+      ? { model: modelName, generationConfig: withThinkingBudget() }
+      : { model: modelName }
+  );
   const result = await model.generateContent(prompt);
   let out = (await result.response.text()).trim();
   out = out.replace(/^```[a-z]*\n?/i, '').replace(/```$/, '').trim();
