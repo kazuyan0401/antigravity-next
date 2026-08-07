@@ -1,8 +1,8 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { enforceTweetLengths } from './tweet-shrink';
 import { enforceTweetMinLengths } from './tweet-expand';
-import { sanitizePost } from './tweet-sanitize';
-import { withThinkingBudget } from './gemini-thinking';
+import { sanitizePost, isDelicateTopic } from './tweet-sanitize';
+import { withThinkingBudget, GEMINI_THINKING_BUDGET_DELICATE } from './gemini-thinking';
 
 export type DramaRecord = {
   id: number | string;
@@ -219,11 +219,6 @@ export async function processDrama(
   drama: DramaRecord,
   genAI: GoogleGenerativeAI,
 ): Promise<DramaProcessResult> {
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    generationConfig: withThinkingBudget({ responseMimeType: 'application/json' }),
-  });
-
   // 公式サイト取得 + サブページ + JSONデータ
   let officialContent = '';
   let officialFetchError = '';
@@ -349,6 +344,18 @@ export async function processDrama(
   const episodeHint = episodeNumber !== null
     ? `今夜放送は **第${episodeNumber}話**（取得情報から確定）。tweet_1には必ず「第${episodeNumber}話」を入れること。`
     : '取得情報内に話数の手がかりが見つからない。1から内容を読み込み、明示的な「第N話」表記が無ければ無理に番号を入れない。';
+
+  // 🌟 デリケート話題（訃報/事件等）は「字数を稼ぐ手段」が禁止される分、100字下限に
+  // 届かせるのに通常トピックより推敲が要る。事前にタイトル/取得情報を見て判定し、
+  // その場合だけ thinkingBudget を引き上げる（2026-08-07 実測で判明。cron側と同じ対応）。
+  const looksDelicate = isDelicateTopic(drama.title, officialContent);
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    generationConfig: withThinkingBudget(
+      { responseMimeType: 'application/json' },
+      looksDelicate ? GEMINI_THINKING_BUDGET_DELICATE : undefined
+    ),
+  });
 
   const prompt = `
 あなたはX（旧Twitter）で月100万円以上を稼ぐプロのアフィリエイター、兼SNSアルゴリズム解析者です。

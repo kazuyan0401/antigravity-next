@@ -4,8 +4,8 @@ import { NextResponse } from 'next/server';
 import Parser from 'rss-parser';
 import { enforceTweetLengths } from '@/app/lib/tweet-shrink';
 import { enforceTweetMinLengths } from '@/app/lib/tweet-expand';
-import { sanitizePost } from '@/app/lib/tweet-sanitize';
-import { withThinkingBudget } from '@/app/lib/gemini-thinking';
+import { sanitizePost, isDelicateTopic } from '@/app/lib/tweet-sanitize';
+import { withThinkingBudget, GEMINI_THINKING_BUDGET_DELICATE } from '@/app/lib/gemini-thinking';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -33,10 +33,6 @@ export async function GET(req: Request) {
 
     const supabase = createClient(supabaseUrl, supabaseKey);
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
-      generationConfig: withThinkingBudget({ responseMimeType: "application/json" }),
-    });
     const parser = new Parser();
 
     // 🌟 日本時間の「時」と「分」を取得
@@ -300,6 +296,18 @@ export async function GET(req: Request) {
     }
 
     const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+
+    // 🌟 デリケート話題（訃報/事件/離婚等）は「字数を稼ぐ手段」が禁止される分、
+    // 100字下限に届かせるのに通常トピックより推敲が要る。事前にタイトル/取得情報を
+    // 見て判定し、その場合だけ thinkingBudget を引き上げる（2026-08-07 実測で判明）。
+    const looksDelicate = isDelicateTopic(title, contentText);
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash",
+      generationConfig: withThinkingBudget(
+        { responseMimeType: "application/json" },
+        looksDelicate ? GEMINI_THINKING_BUDGET_DELICATE : undefined
+      ),
+    });
 
     const prompt = `
 あなたはX（旧Twitter）で月100万円以上を稼ぐプロのアフィリエイター、兼SNSアルゴリズム解析者です。
